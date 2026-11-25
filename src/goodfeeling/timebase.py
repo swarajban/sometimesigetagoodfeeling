@@ -83,6 +83,18 @@ def source_frames_for_output(output_frames: int, src_fps: Rate, out_fps: Rate, s
     return frames
 
 
+def nearest_source_frames(output_frames: int, src_fps: Rate, out_fps: Rate, speed: float) -> tuple[int, int]:
+    """Source span whose timeline length is closest to `output_frames`, and that length.
+
+    Exact whenever the source is at least as fast as the output; otherwise within a frame or so.
+    """
+    frames = source_frames_for_output(output_frames, src_fps, out_fps, speed)
+    options = [(frames, output_frames_for_source(frames, src_fps, out_fps, speed))]
+    if frames > 1:
+        options.append((frames - 1, output_frames_for_source(frames - 1, src_fps, out_fps, speed)))
+    return min(options, key=lambda o: (abs(o[1] - output_frames), -o[0]))
+
+
 def source_per_output(src_fps: Rate, out_fps: Rate, speed: float) -> Fraction:
     return as_fraction(src_fps) * Fraction(speed).limit_denominator(1000) / as_fraction(out_fps)
 

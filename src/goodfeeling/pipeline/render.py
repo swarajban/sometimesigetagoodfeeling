@@ -19,6 +19,7 @@ from pathlib import Path
 from goodfeeling.media.color import REC709_TAGS, to_rec709
 from goodfeeling.media.encoders import Encoder
 from goodfeeling.media.ffmpeg import count_video_packets, ffprobe_json, run_ffmpeg
+from goodfeeling.media.fingerprint import fingerprint
 from goodfeeling.schemas.edl import EDL, Shot
 from goodfeeling.timebase import as_fraction, mp4_timescale, seek_seconds
 
@@ -42,6 +43,31 @@ class Piece:
     spans: list[Span]
     fade_in: int = 0
     fade_out: int = 0
+
+
+def render_problems(edl: EDL) -> list[tuple[int, str]]:
+    """Rules any EDL must meet to render, hand-edited ones included: (shot index, problem)."""
+    problems = [
+        (i, f"shot {s.id}: speed ramps (more than one keyframe) arrive in phase 3")
+        for i, s in enumerate(edl.shots)
+        if len(s.speed) != 1
+    ]
+    timeline = edl.timeline()
+    out = as_fraction(edl.output.fps)
+    for prev, cur in zip(timeline, timeline[1:], strict=False):
+        if cur.shot.transition != "crossfade":
+            continue
+        h = cur.shot.transition_frames
+        nxt = timeline[cur.index + 1].shot if cur.index + 1 < len(timeline) else None
+        outgoing = nxt.transition_frames if nxt is not None and nxt.transition == "crossfade" else 0
+        src_prev, src_cur = edl.sources[prev.shot.clip], edl.sources[cur.shot.clip]
+        tail = math.ceil(h * as_fraction(src_prev.fps) * Fraction(prev.shot.constant_speed) / out)
+        head = math.ceil(h * as_fraction(src_cur.fps) * Fraction(cur.shot.constant_speed) / out)
+        if h < 1 or 2 * h > prev.length or h + outgoing > cur.length:
+            problems.append((cur.index, f"shot {cur.shot.id}: too short for its {h}-frame crossfade"))
+        elif prev.shot.out + tail > src_prev.frames or cur.shot.in_ - head < 0:
+            problems.append((cur.index, f"shot {cur.shot.id}: not enough footage outside the shots for the crossfade"))
+    return problems
 
 
 def plan_pieces(edl: EDL) -> list[Piece]:
@@ -117,6 +143,10 @@ def _fades(piece: Piece, edl: EDL) -> list[str]:
     return out
 
 
+def _content_id(path: str | None) -> str | None:
+    return fingerprint(path) if path and Path(path).exists() else path
+
+
 def piece_key(edl: EDL, piece: Piece, encoder: Encoder) -> str:
     spans = []
     for span in piece.spans:
@@ -124,8 +154,8 @@ def piece_key(edl: EDL, piece: Piece, encoder: Encoder) -> str:
         spans.append(
             {
                 "fp": source.fingerprint,
-                "stab": source.stabilized_path,
-                "lut": source.lut,
+                "stab": _content_id(source.stabilized_path),
+                "lut": _content_id(source.lut),
                 "fps": source.fps,
                 "in": span.shot.in_,
                 "out": span.shot.out,
@@ -157,7 +187,7 @@ def render_piece(edl: EDL, piece: Piece, encoder: Encoder, out: Path) -> Path:
         inputs += args
         chains.append(chain)
     fades = _fades(piece, edl)
-    tail = [*fades, "tpad=stop_mode=clone:stop_duration=2"]
+    tail = [*fades, "tpad=stop_mode=clone:stop=1"]
     if piece.kind == "crossfade":
         duration = float(piece.count / as_fraction(edl.output.fps))
         graph = (
@@ -200,11 +230,9 @@ def render(
     progress=print,
     parallel: int = 2,
 ) -> Path:
-    problems = [
-        f"shot {s.id}: speed ramps (more than one keyframe) arrive in phase 3" for s in edl.shots if len(s.speed) != 1
-    ]
+    problems = render_problems(edl)
     if problems:
-        raise ValueError("; ".join(problems))
+        raise ValueError("; ".join(message for _, message in problems))
     for shot in edl.shots:
         source = edl.sources[shot.clip]
         if not Path(source.stabilized_path or source.path).exists():
@@ -223,7 +251,7 @@ def render(
                 progress(f"  encoded {done}/{len(pieces)}")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     listing = cache_dir / f"concat-{os.getpid()}.txt"
-    listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in paths))
+    listing.write_text("".join("file '" + p.as_posix().replace("'", "'\\''") + "'\n" for p in paths))
     fps = as_fraction(edl.output.fps)
     total = edl.total_frames()
     seconds = float(total / fps)

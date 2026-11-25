@@ -45,6 +45,8 @@ def probe(path: str | Path) -> ClipInfo:
     avg = video.get("avg_frame_rate") or "0/1"
     avg_value = Fraction(*map(int, avg.split("/"))) if avg not in ("0/0", "0/1") else Fraction(0)
     vfr = bool(avg_value) and abs(float(avg_value) - fps[0] / fps[1]) / (fps[0] / fps[1]) > 0.005
+    if vfr and fps[0] / fps[1] / float(avg_value) >= 1.5:
+        fps = normalize_rate(Fraction(avg_value).limit_denominator(1001))
     duration = float(video.get("duration") or fmt.get("duration") or 0.0)
     frames = int(video["nb_frames"]) if str(video.get("nb_frames", "")).isdigit() else 0
     if frames <= 0:

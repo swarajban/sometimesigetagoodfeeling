@@ -8,6 +8,7 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
+from goodfeeling.media.fingerprint import fingerprint
 from goodfeeling.media.probe import probe
 from goodfeeling.media.proxy import PROXY_VERSION, make_proxy
 from goodfeeling.schemas.clip import ClipInfo, FlightInfo
@@ -153,7 +154,8 @@ def ingest(
     for flight in flights:
         clip = by_path[flight.path]
         flight.stabilized_path = resolve_stabilized(clip, stabilized_dir)
-        proxy = project.path("proxies", f"{clip.fingerprint}-{PROXY_VERSION}{'-lut' if lut else ''}.mp4")
+        lut_tag = f"-lut{fingerprint(lut)[-8:]}" if lut else ""
+        proxy = project.path("proxies", f"{clip.fingerprint}-{PROXY_VERSION}{lut_tag}.mp4")
         if not proxy.exists():
             progress(
                 f"  proxy {flight.clip_id} {Path(clip.path).name} ({clip.codec} {clip.bit_depth}-bit "

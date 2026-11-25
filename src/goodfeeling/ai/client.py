@@ -171,12 +171,21 @@ def assistant_content(response: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 class Claude:
-    def __init__(self, transport: Transport, logger: Logger | None = None, meter: Meter | None = None):
+    def __init__(
+        self,
+        transport: Transport,
+        logger: Logger | None = None,
+        meter: Meter | None = None,
+        budget_usd: float | None = None,
+    ):
         self.transport = transport
         self.logger = logger
         self.meter = meter or Meter()
+        self.budget_usd = budget_usd
 
     def send(self, step: str, request: dict[str, Any]) -> dict[str, Any]:
+        if self.budget_usd is not None and self.meter.cost >= self.budget_usd:
+            raise AiError(f"spend limit reached: ${self.meter.cost:.2f} of ${self.budget_usd:.2f} (max_cost_usd)")
         response = self.transport(request)
         usage = usage_of(response)
         cost = cost_usd(

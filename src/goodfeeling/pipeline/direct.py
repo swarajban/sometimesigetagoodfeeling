@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from goodfeeling.ai.client import Claude, tool_result
 from goodfeeling.ai.prompts import DIRECT_SYSTEM, DIRECT_TOOL
+from goodfeeling.pipeline.render import render_problems
 from goodfeeling.pipeline.signals import hamming
 from goodfeeling.schemas.clip import ClipInfo, FlightInfo
 from goodfeeling.schemas.edl import EDL, MusicRef, Output, Shot, Source
@@ -22,8 +23,9 @@ from goodfeeling.timebase import (
     Rate,
     as_fraction,
     format_timecode,
+    nearest_source_frames,
     seconds_to_frames,
-    source_frames_for_output,
+    source_per_output,
 )
 
 log = logging.getLogger(__name__)
@@ -137,7 +139,9 @@ def build_edl(ctx: Context, plan: EditPlan) -> tuple[EDL | None, list[Violation]
     violations: list[Violation] = []
     shots: list[Shot] = []
     used: dict[str, int] = {}
+    beat_starts: list[int] = []
     beat = 0
+    position = 0
     for i, planned in enumerate(plan.shots):
         seg = ctx.segments.get(planned.segment_id)
         if seg is None:
@@ -169,8 +173,7 @@ def build_edl(ctx: Context, plan: EditPlan) -> tuple[EDL | None, list[Violation]
         if end_beat > ctx.window.beats:
             violations.append(Violation(i, "too_long", f"plan runs past the edit's {ctx.window.beats} beats"))
             break
-        length = ctx.window.frame_of(end_beat) - ctx.window.frame_of(beat)
-        need = source_frames_for_output(length, clip.fps, ctx.out_fps, speed)
+        need, length = nearest_source_frames(ctx.window.frame_of(end_beat) - position, clip.fps, ctx.out_fps, speed)
         if need > seg.frames:
             have = seg.frames / fps_float(clip.fps)
             violations.append(
@@ -186,6 +189,8 @@ def build_edl(ctx: Context, plan: EditPlan) -> tuple[EDL | None, list[Violation]
         if not planned.reason.strip():
             violations.append(Violation(i, "reason", "every shot needs a reason"))
         transition = planned.transition if shots else "cut"
+        beat_starts.append(ctx.window.frame_of(beat))
+        position += length
         shots.append(
             Shot(
                 id=f"s{len(shots) + 1:02d}",
@@ -210,7 +215,7 @@ def build_edl(ctx: Context, plan: EditPlan) -> tuple[EDL | None, list[Violation]
     if not shots:
         return None, violations or [Violation(None, "empty", "plan has no shots")]
     edl = make_edl(ctx, shots)
-    violations += check_edl(ctx, edl, plan)
+    violations += check_edl(ctx, edl, plan, beat_starts)
     return edl, violations
 
 
@@ -243,24 +248,23 @@ def make_edl(ctx: Context, shots: list[Shot]) -> EDL:
     )
 
 
-def check_edl(ctx: Context, edl: EDL, plan: EditPlan) -> list[Violation]:
+def check_edl(ctx: Context, edl: EDL, plan: EditPlan, beat_starts: list[int]) -> list[Violation]:
+    """Beat landing plus the render-time rules.
+
+    A cut may sit off its beat only when the shot before it comes from footage slower than the output, whose whole
+    source frames cannot produce every length; the next shot absorbs the difference, so it never accumulates.
+    """
     violations = []
     timeline = edl.timeline()
-    beat_frames = set(ctx.window.frames)
-    for entry in timeline:
-        if entry.start not in beat_frames:
-            violations.append(Violation(entry.index, "off_beat", f"starts at frame {entry.start}, not a beat"))
-    for prev, cur in zip(timeline, timeline[1:], strict=False):
-        if cur.shot.transition != "crossfade":
-            continue
-        h = cur.shot.transition_frames
-        src_prev, src_cur = edl.sources[prev.shot.clip], edl.sources[cur.shot.clip]
-        tail = math.ceil(h * as_fraction(src_prev.fps) * prev.shot.constant_speed / as_fraction(ctx.out_fps))
-        head = math.ceil(h * as_fraction(src_cur.fps) * cur.shot.constant_speed / as_fraction(ctx.out_fps))
-        if 2 * h > min(prev.length, cur.length):
-            violations.append(Violation(cur.index, "crossfade", "shots too short for a crossfade"))
-        elif prev.shot.out + tail > src_prev.frames or cur.shot.in_ - head < 0:
-            violations.append(Violation(cur.index, "crossfade", "not enough footage outside the shot for handles"))
+    for entry, wanted in zip(timeline, beat_starts, strict=False):
+        allowed = 0
+        if entry.index > 0:
+            prev = timeline[entry.index - 1].shot
+            ratio = source_per_output(edl.sources[prev.clip].fps, ctx.out_fps, prev.constant_speed)
+            allowed = 0 if ratio >= 1 else math.ceil(1 / (2 * ratio))
+        if abs(entry.start - wanted) > allowed:
+            violations.append(Violation(entry.index, "off_beat", f"starts at frame {entry.start}, beat is {wanted}"))
+    violations += [Violation(index, "crossfade", message) for index, message in render_problems(edl)]
     by_seg = {}
     for i, planned in enumerate(plan.shots):
         if planned.segment_id in ctx.segments:
@@ -597,12 +601,13 @@ def direct(ctx: Context, *, claude: Claude | None, model: str, effort: str, prog
         if round_index == MAX_REPAIR_ROUNDS:
             break
         progress(f"  plan has {len(violations)} problem(s); asking for repair {round_index + 1}/{MAX_REPAIR_ROUNDS}")
-        tool_use = next(b for b in conversation[-1]["content"] if b.get("type") == "tool_use")
+        tool_uses = [b for b in conversation[-1]["content"] if b.get("type") == "tool_use"]
         feedback = (
             "The plan failed validation. Fix every problem below and resubmit the complete plan with "
             "submit_edit_plan.\n" + "\n".join(f"- {v}" for v in violations)
         )
-        conversation.append({"role": "user", "content": [tool_result(tool_use["id"], feedback, is_error=True)]})
+        results = [tool_result(t["id"], feedback, is_error=True) for t in tool_uses]
+        conversation.append({"role": "user", "content": results})
         call, conversation = claude.call_tool(
             step="repair",
             model=model,

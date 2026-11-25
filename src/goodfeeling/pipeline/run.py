@@ -83,7 +83,11 @@ def make_claude(settings: Settings, project: Project, transport: Transport | Non
         if not key:
             return None
         transport = anthropic_transport(key)
-    return Claude(transport, JsonlLogger(project.path("logs", "ai.jsonl"), project.db, project.id))
+    return Claude(
+        transport,
+        JsonlLogger(project.path("logs", "ai.jsonl"), project.db, project.id),
+        budget_usd=settings.max_cost_usd,
+    )
 
 
 def analyze(project: Project, settings: Settings, progress: Callable[[str], None]):
@@ -130,9 +134,11 @@ def estimate_run(
 def print_estimate(estimates: list[Estimate], progress, settings: Settings) -> tuple[float, float]:
     expected = sum(e.cost for e in estimates)
     direct = next((e for e in estimates if e.step == "direct"), None)
-    worst = expected + (
-        3 * cost_usd(direct.model, direct.input_tokens + direct.output_tokens, direct.output_tokens) if direct else 0.0
-    )
+    worst = expected
+    if direct:
+        for k in range(1, 4):
+            grown = direct.input_tokens + k * (direct.output_tokens + 800)
+            worst += cost_usd(direct.model, grown, direct.output_tokens)
     progress("Cost estimate (before any Claude call; prompt caching not assumed):")
     for e in estimates:
         progress(

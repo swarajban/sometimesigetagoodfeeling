@@ -168,6 +168,10 @@ def analyze_music(path: str | Path, start_bpm: float = 120.0) -> MusicAnalysis:
     beats, regular = _regular_grid(np.asarray(tracked, dtype=float), duration)
     beats = _refine_phase(beats, y, SR)
     beats = beats[(beats >= 0) & (beats < duration)]
+    if len(beats) < 16:
+        raise ValueError(
+            f"{path.name}: found only {len(beats)} beats; pick a track with a clear beat of at least ~10 s"
+        )
     if regular and len(beats) > 1:
         tempo_value = 60.0 / float(np.median(np.diff(beats)))
     else:

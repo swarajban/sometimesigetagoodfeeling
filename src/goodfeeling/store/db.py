@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -80,7 +81,8 @@ class Database:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
-        self.conn = sqlite3.connect(path, timeout=30, isolation_level=None)
+        self.conn = sqlite3.connect(path, timeout=30, isolation_level=None, check_same_thread=False)
+        self.lock = threading.RLock()
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=30000")
@@ -104,7 +106,8 @@ class Database:
         self.conn.close()
 
     def execute(self, sql: str, params: tuple | dict = ()) -> sqlite3.Cursor:
-        return self.conn.execute(sql, params)
+        with self.lock:
+            return self.conn.execute(sql, params)
 
     def project_id(self, slug: str, name: str, footage_dir: str) -> int:
         now = time.time()

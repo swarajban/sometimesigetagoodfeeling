@@ -105,3 +105,15 @@ def test_cuts_on_beats_without_drift(out_fps, src_fps):
         naive += planned.beats * per_beat
     drift = abs(naive - edl.total_frames())
     assert drift >= 3, "the naive per-shot rounding this guards against should visibly drift"
+
+
+def test_slower_source_never_accumulates():
+    ctx = make_context((60000, 1001), (30000, 1001))
+    shots = [PlannedShot(segment_id=f"c{i + 1:02d}s01", beats=[3, 4, 5, 3][i % 4], reason="r") for i in range(80)]
+    edl, violations = build_edl(ctx, EditPlan(shots=shots))
+    assert violations == [] and edl is not None
+    beat = 0
+    for entry, planned in zip(edl.timeline(), shots, strict=True):
+        assert abs(entry.start - ctx.window.frame_of(beat)) <= 1
+        beat += planned.beats
+    assert edl.total_frames() - ctx.window.frame_of(beat) in (-1, 0, 1)
