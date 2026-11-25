@@ -1,0 +1,77 @@
+{
+  "about": "Freely licensed sample media for the end-to-end run. Nothing here is committed to the repo; scripts/fetch_sample.py downloads it.",
+  "footage": [
+    {
+      "id": "arch-rock",
+      "title": "Arch Rock at Corona Del Mar beach in California, USA as viewed from a FPV drone",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/7/79/Arch_Rock_at_Corona_Del_Mar_beach_in_California%2C_USA_as_viewed_from_a_FPV_drone.webm",
+      "page": "https://commons.wikimedia.org/wiki/File:Arch_Rock_at_Corona_Del_Mar_beach_in_California,_USA_as_viewed_from_a_FPV_drone.webm",
+      "sha1": "561424c4121e129c5c86a51b0a646c3bf62169c6",
+      "author": "Daniel Peckham",
+      "license": "CC BY 3.0",
+      "license_url": "https://creativecommons.org/licenses/by/3.0",
+      "dji_name": [
+        "DJI_20231109153000_0001_D.MP4",
+        "DJI_20231109153048_0002_D.MP4"
+      ],
+      "split_at": 48,
+      "creation_time": "2023-11-09T15:30:00Z"
+    },
+    {
+      "id": "mount-san-antonio",
+      "title": "Mount San Antonio in California, USA as viewed from a FPV drone",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/e/ed/Mount_San_Antonio_in_California%2C_USA_as_viewed_from_a_FPV_drone.webm",
+      "page": "https://commons.wikimedia.org/wiki/File:Mount_San_Antonio_in_California,_USA_as_viewed_from_a_FPV_drone.webm",
+      "sha1": "bf6228586220559c05840fa99051f05a17d91040",
+      "author": "Daniel Peckham",
+      "license": "CC BY 3.0",
+      "license_url": "https://creativecommons.org/licenses/by/3.0",
+      "dji_name": [
+        "DJI_20231110101500_0003_D.MP4"
+      ],
+      "creation_time": "2023-11-10T10:15:00Z"
+    },
+    {
+      "id": "porsche",
+      "title": "Two Porsche 911 Targa driving as viewed from FPV drone",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/a/a8/Two_Porsche_911_Targa_driving_as_viewed_from_FPV_drone.webm",
+      "page": "https://commons.wikimedia.org/wiki/File:Two_Porsche_911_Targa_driving_as_viewed_from_FPV_drone.webm",
+      "sha1": "c8d305ea824321a62e4eaeca7e310eaaa8beaea0",
+      "author": "SE FPV",
+      "license": "CC BY 3.0",
+      "license_url": "https://creativecommons.org/licenses/by/3.0",
+      "dji_name": [
+        "DJI_20231111141000_0004_D.MP4"
+      ],
+      "creation_time": "2023-11-11T14:10:00Z"
+    },
+    {
+      "id": "galveston-crash",
+      "title": "DJI Avata FPV drone crash into the water of Galveston Bay and another FPV consumer drone crash (FPV-D footage)",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/1/19/DJI_Avata_FPV_drone_crash_into_the_water_of_Galveston_Bay_and_another_FPV_consumer_drone_crash_%28FPV-D_footage%29.webm",
+      "page": "https://commons.wikimedia.org/wiki/File:DJI_Avata_FPV_drone_crash_into_the_water_of_Galveston_Bay_and_another_FPV_consumer_drone_crash_(FPV-D_footage).webm",
+      "sha1": "5dddf1f2a6c6823a601a971fdbd89d9c79db7ed3",
+      "author": "Third Coast Drone",
+      "license": "CC BY 3.0",
+      "license_url": "https://creativecommons.org/licenses/by/3.0",
+      "dji_name": [
+        "DJI_20231112172000_0005_D.MP4"
+      ],
+      "creation_time": "2023-11-12T17:20:00Z"
+    }
+  ],
+  "music": [
+    {
+      "id": "movement-proposition",
+      "title": "Movement Proposition",
+      "author": "Kevin MacLeod (incompetech.com)",
+      "url": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Movement%20Proposition.mp3",
+      "page": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100778",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "file": "movement-proposition.mp3",
+      "bpm_listed": 125,
+      "sha1": "9c017ff8ef9271aa36c7616a70a6b78a3fba02de"
+    }
+  ]
+}
