@@ -156,14 +156,14 @@ def _sections(
     return sections
 
 
-def analyze_music(path: str | Path) -> MusicAnalysis:
+def analyze_music(path: str | Path, start_bpm: float = 120.0) -> MusicAnalysis:
     import librosa
 
     path = Path(path)
     y = decode_audio(path)
     duration = len(y) / SR
     onset = librosa.onset.onset_strength(y=y, sr=SR, hop_length=HOP)
-    tempo, beat_frames = librosa.beat.beat_track(onset_envelope=onset, sr=SR, hop_length=HOP)
+    tempo, beat_frames = librosa.beat.beat_track(onset_envelope=onset, sr=SR, hop_length=HOP, start_bpm=start_bpm)
     tracked = librosa.frames_to_time(beat_frames, sr=SR, hop_length=HOP)
     beats, regular = _regular_grid(np.asarray(tracked, dtype=float), duration)
     beats = _refine_phase(beats, y, SR)
