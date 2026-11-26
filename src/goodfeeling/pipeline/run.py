@@ -8,7 +8,7 @@ import logging
 import math
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from goodfeeling.ai.client import Claude, JsonlLogger, Transport, anthropic_transport
@@ -70,6 +70,20 @@ class RunOptions:
     no_ai: bool = False
     fps: str | None = None
     render: bool = True
+
+    def to_json(self) -> dict:
+        return {k: str(v) if isinstance(v, Path) else v for k, v in asdict(self).items()}
+
+    @classmethod
+    def from_json(cls, data: dict) -> RunOptions:
+        known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        for key in ("footage", "music", "data_root"):
+            if known.get(key) is not None:
+                known[key] = Path(known[key])
+        return cls(**known)
+
+
+EstimateHook = Callable[[list[Estimate], float, float], None]
 
 
 @dataclass
@@ -225,6 +239,24 @@ def music_step(project: Project, music_path: Path, drop_at: float | None, progre
     return music
 
 
+def review_pool(
+    segments: list[Segment], choices: dict[str, dict]
+) -> tuple[list[Segment], set[str], set[str], set[str]]:
+    """The pilot's review applied to segments: the automatic pick minus excluded segments plus included ones (even
+    those the automatic filter rejected). Starred segments are always in. Returns the pool and the starred,
+    disliked, and excluded ids; choices can name moments (m01...) as well as segments."""
+    auto = {s.id for s in eligible(segments)}
+    starred = {sid for sid, c in choices.items() if c.get("star")}
+    disliked = {sid for sid, c in choices.items() if c.get("taste", 0) < 0}
+    excluded = {sid for sid, c in choices.items() if c.get("include") is False and sid not in starred}
+    pool = [
+        s
+        for s in segments
+        if s.id in starred or (s.id not in excluded and (s.id in auto or choices.get(s.id, {}).get("include")))
+    ]
+    return pool, starred, disliked, excluded
+
+
 def dominant_fps(clips: list[tuple[FlightInfo, ClipInfo, Path]]) -> Rate:
     weight: Counter = Counter()
     for _, clip, _ in clips:
@@ -265,7 +297,10 @@ def run(
     transport: Transport | None = None,
     progress: Callable[[str], None] = print,
     confirm: Callable[[str], bool] | None = None,
+    estimate_hook: EstimateHook | None = None,
 ) -> RunResult:
+    """`estimate_hook(estimates, expected, worst)` runs after the estimate and before any Claude call; it may raise to
+    stop the run (the server's jobs use it to wait for the pilot's approval)."""
     if options.format not in FORMATS:
         raise ValueError(f"format must be one of {', '.join(FORMATS)}")
     edit = options.edit or ("reel" if options.format == "reel" else DEFAULT_EDIT)
@@ -304,6 +339,8 @@ def run(
     else:
         result.estimate = estimate_run(project, settings, segments, clip_map, directing=directing)
         expected, worst = print_estimate(result.estimate, progress, settings)
+        if estimate_hook is not None:
+            estimate_hook(result.estimate, expected, worst)
         if worst > settings.max_cost_usd:
             raise CostRefused(
                 f"estimate ${worst:.2f} exceeds the ${settings.max_cost_usd:.2f} limit "
@@ -326,11 +363,10 @@ def run(
     result.outputs["summary_md"] = summary_md
 
     progress("Moments")
-    extent = extents(segments)
     moments, moment_stats = find_moments(
         project,
         usable,
-        extent,
+        extents(segments),
         clip_map,
         claude=claude,
         model=settings.models.moments,
@@ -338,9 +374,19 @@ def run(
         progress=progress,
     )
     progress(f"  {len(moments)} moments ({moment_stats})")
+    choices = project.db.choices(project.id)
+    pool, starred, disliked, excluded = review_pool(segments, choices)
+    if choices:
+        progress(
+            f"  review: {len(pool)} segments available, {len(starred)} starred, {len(excluded)} excluded, "
+            f"{len(disliked)} disliked"
+        )
+    extent = extents([s for s in segments if s.id not in excluded])
     by_id = {s.id: s for s in segments}
-    pickable = {s.id: s for s in usable}
+    pickable = {s.id: s for s in pool}
     for moment in moments:
+        if moment.id in excluded or excluded.intersection(moment.segment_ids):
+            continue
         seg = moment_segment(moment, by_id)
         pickable[seg.id] = seg
         lo, hi = extent.get(moment.segment_ids[0], (moment.start, moment.end))
@@ -371,7 +417,9 @@ def run(
         centre=centre,
         pace=options.pace if options.pace is not None else parse_pace(settings.pace),
         extent=extent,
-        moments={m.id: m for m in moments},
+        moments={m.id: m for m in moments if m.id in pickable},
+        must_use=starred & set(pickable),
+        disliked=disliked,
     )
     progress(
         f"Direct ({options.format}, pace {ctx.pace:g}, floor {ctx.rules.floor_s:.1f} s, "
@@ -384,6 +432,10 @@ def run(
     )
     result.outputs["edl"] = project.save_edl(
         directed.edl, origin=directed.plan.source, edit=edit, edit_format=options.format
+    )
+    project.db.execute(
+        "UPDATE edits SET options_json=? WHERE project_id=? AND name=?",
+        (json.dumps(options.to_json()), project.id, edit),
     )
     result.outputs["plan_json"] = project.edit_path(edit, "edits", "plan.json")
     result.outputs["plan_json"].write_text(plan_json(directed))

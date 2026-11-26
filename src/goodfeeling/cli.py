@@ -1,4 +1,4 @@
-"""Command line: `goodfeeling run | score | render --from-edl | doctor`."""
+"""Command line: `goodfeeling serve | run | score | music | render --from-edl | doctor`."""
 
 from __future__ import annotations
 
@@ -39,6 +39,34 @@ def _confirm(yes: bool):
     if yes or not sys.stdin.isatty():
         return None
     return lambda question: typer.confirm(question, default=True)
+
+
+@app.command()
+def serve(
+    port: Annotated[int, typer.Option(help="Port on 127.0.0.1 for the app.")] = 8765,
+    data_root: DataRoot = None,
+    open_browser: Annotated[bool, typer.Option("--open/--no-open", help="Open the app in the browser.")] = True,
+    dev: Annotated[
+        bool, typer.Option("--dev", help="Also run the Vite dev server with hot reload, and open that instead.")
+    ] = False,
+    dev_port: Annotated[int, typer.Option(help="Port for the Vite dev server with --dev.")] = 5173,
+) -> None:
+    """Start the web app and its worker on 127.0.0.1; stopping it stops the worker too."""
+    from goodfeeling.server.serve import serve as run_server
+
+    run_server(port, str(data_root) if data_root else None, open_browser, dev, dev_port)
+
+
+@app.command(hidden=True)
+def openapi() -> None:
+    """Print the API's OpenAPI schema (the web app's types are generated from it)."""
+    import json
+    import tempfile
+
+    from goodfeeling.server.app import create_app
+
+    with tempfile.TemporaryDirectory() as root:
+        typer.echo(json.dumps(create_app(Path(root)).openapi(), indent=2))
 
 
 @app.command()

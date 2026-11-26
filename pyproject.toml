@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "anthropic>=2.14",
+    "fastapi>=0.120",
     "librosa>=1.0",
     "numpy>=2.0",
     "opencv-python-headless>=4.10",
@@ -14,6 +15,7 @@ dependencies = [
     "scenedetect>=0.6.4",
     "soundfile>=0.12",
     "typer>=0.15",
+    "uvicorn>=0.38",
 ]
 
 [project.scripts]
@@ -21,6 +23,7 @@ goodfeeling = "goodfeeling.cli:app"
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28",
     "pytest>=8.3",
     "ruff>=0.8",
 ]

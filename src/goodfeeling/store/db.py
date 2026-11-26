@@ -122,6 +122,59 @@ MIGRATIONS: list[str] = [
         PRIMARY KEY (project_id, moment_id)
     );
     """,
+    """
+    ALTER TABLE edits ADD COLUMN options_json TEXT;
+    CREATE TABLE jobs (
+        id INTEGER PRIMARY KEY,
+        project_id INTEGER REFERENCES projects(id),
+        kind TEXT NOT NULL,
+        edit TEXT,
+        params_json TEXT NOT NULL,
+        status TEXT NOT NULL,
+        stage TEXT,
+        step_done INTEGER,
+        step_total INTEGER,
+        estimate_json TEXT,
+        approved_usd REAL,
+        result_json TEXT,
+        error TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        lease_owner TEXT,
+        lease_expires REAL,
+        cancel_requested INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL,
+        started_at REAL,
+        finished_at REAL,
+        updated_at REAL NOT NULL
+    );
+    CREATE INDEX jobs_by_status ON jobs (status, id);
+    CREATE TABLE job_events (
+        id INTEGER PRIMARY KEY,
+        job_id INTEGER NOT NULL REFERENCES jobs(id),
+        message TEXT NOT NULL,
+        created_at REAL NOT NULL
+    );
+    CREATE INDEX job_events_by_job ON job_events (job_id, id);
+    CREATE TABLE segment_choices (
+        project_id INTEGER NOT NULL REFERENCES projects(id),
+        seg_id TEXT NOT NULL,
+        include INTEGER,
+        star INTEGER NOT NULL DEFAULT 0,
+        taste INTEGER NOT NULL DEFAULT 0,
+        updated_at REAL NOT NULL,
+        PRIMARY KEY (project_id, seg_id)
+    );
+    CREATE TABLE feedback (
+        id INTEGER PRIMARY KEY,
+        project_id INTEGER NOT NULL REFERENCES projects(id),
+        seg_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        value INTEGER NOT NULL,
+        segment_json TEXT NOT NULL,
+        created_at REAL NOT NULL
+    );
+    CREATE INDEX feedback_by_project ON feedback (project_id, id);
+    """,
 ]
 
 
@@ -224,6 +277,20 @@ class Database:
             "prompt_version, result_json, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
             (key, fingerprint, start, end, params, model, prompt_version, json.dumps(result), time.time()),
         )
+
+    def choices(self, project_id: int) -> dict[str, dict[str, Any]]:
+        """The pilot's review choices per segment: include (None = automatic), star, taste (1 like, -1 dislike)."""
+        rows = self.execute(
+            "SELECT seg_id, include, star, taste FROM segment_choices WHERE project_id=?", (project_id,)
+        ).fetchall()
+        return {
+            r["seg_id"]: {
+                "include": None if r["include"] is None else bool(r["include"]),
+                "star": bool(r["star"]),
+                "taste": int(r["taste"]),
+            }
+            for r in rows
+        }
 
     def project_cost(self, project_id: int) -> float:
         row = self.execute("SELECT COALESCE(SUM(cost_usd),0) AS c FROM ai_log WHERE project_id=?", (project_id,))

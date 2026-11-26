@@ -60,6 +60,8 @@ class Context:
     pace: float = 1.0
     extent: dict[str, tuple[int, int]] = field(default_factory=dict)
     moments: dict[str, Moment] = field(default_factory=dict)
+    must_use: set[str] = field(default_factory=set)
+    disliked: set[str] = field(default_factory=set)
 
     @property
     def seconds_per_beat(self) -> float:
@@ -212,6 +214,30 @@ def fps_float(fps: Rate) -> float:
     return fps[0] / fps[1]
 
 
+def usable_stars(ctx: Context) -> set[str]:
+    """Starred picks a plan can be required to use: each can hold a shot at the pacing floor, no two share footage
+    or show the same moment, and together they fit in the edit. Strongest first when they don't all fit."""
+    floor = ctx.floor_beats
+    kept: list[Segment] = []
+    starred = [ctx.segments[sid] for sid in ctx.must_use if sid in ctx.segments]
+    for seg in sorted(starred, key=lambda s: (-ctx.rank(s), ctx.chrono_key(s))):
+        lo, hi = ctx.bounds(seg)
+        if _seconds(ctx, seg, hi - lo) < floor * ctx.seconds_per_beat or (len(kept) + 1) * floor > ctx.window.beats:
+            continue
+        if _overlaps(ctx, seg, kept):
+            continue
+        kept.append(seg)
+    return {seg.id for seg in kept}
+
+
+def must_use_problems(ctx: Context, plan: EditPlan) -> list[Violation]:
+    used = {p.segment_id for p in plan.shots}
+    return [
+        Violation(None, "must_use", f"{sid} is starred by the pilot and must be in the edit")
+        for sid in sorted(usable_stars(ctx) - used)
+    ]
+
+
 def build_edl(ctx: Context, plan: EditPlan) -> tuple[EDL | None, list[Violation]]:
     violations: list[Violation] = []
     shots: list[Shot] = []
@@ -286,6 +312,7 @@ def build_edl(ctx: Context, plan: EditPlan) -> tuple[EDL | None, list[Violation]
                 tags=seg.claude.tags if seg.claude else [],
                 description=seg.claude.description if seg.claude else "",
                 reason=planned.reason,
+                starred=seg.id in ctx.must_use,
             )
         )
         beat = end_beat
@@ -436,20 +463,30 @@ def select(ctx: Context) -> EditPlan:
     """Deterministic plan: the best moments played in full, short connecting shots between them, the biggest
     moment on the peak (a reel opens on it)."""
     total, floor, filler = ctx.window.beats, ctx.floor_beats, ctx.filler_beats
-    clean = [s for s in ctx.segments.values() if not s.signals.crash and not (s.claude and s.claude.penalties.crash)]
+    required = usable_stars(ctx)
+    clean = [
+        s
+        for s in ctx.segments.values()
+        if s.id in required or not (s.signals.crash or (s.claude and s.claude.penalties.crash))
+    ]
     moments = sorted(
-        [s for s in clean if s.id in ctx.moments and ctx.moments[s.id].hold == "full"], key=lambda s: -ctx.rank(s)
+        [s for s in clean if s.id in ctx.moments and ctx.moments[s.id].hold == "full"],
+        key=lambda s: (s.id not in required, s.id in ctx.disliked, -ctx.rank(s)),
     )
     budget = round(total * (1 - ctx.rules.filler_share))
     chosen: list[tuple[Segment, int]] = []
     used = 0
     for seg in moments:
         beats = min(ctx.full_beats(seg), total)
-        if used + beats > budget and chosen or _overlaps(ctx, seg, [c for c, _ in chosen]):
+        over = used + beats > budget and chosen and seg.id not in required
+        if over or used + beats > total or _overlaps(ctx, seg, [c for c, _ in chosen]):
             continue
         chosen.append((seg, beats))
         used += beats
-    fillers = sorted([s for s in clean if s.id not in ctx.moments], key=lambda s: -ctx.rank(s))
+    fillers = sorted(
+        [s for s in clean if s.id not in ctx.moments or (s.id in required and ctx.moments[s.id].hold != "full")],
+        key=lambda s: (s.id not in required, s.id in ctx.disliked, -ctx.rank(s)),
+    )
     if 0 < total - used < floor and chosen:
         index = max(range(len(chosen)), key=lambda i: chosen[i][1])
         seg, beats = chosen[index]
@@ -546,11 +583,15 @@ def fix(ctx: Context, plan: EditPlan) -> EditPlan:
         )
         picked.append(seg)
     while sum(p.beats for p in kept) > total and kept:
-        weakest = min(range(len(kept)), key=lambda i: ctx.segments[kept[i].segment_id].final_score)
+        weakest = min(
+            range(len(kept)),
+            key=lambda i: (kept[i].segment_id in ctx.must_use, ctx.segments[kept[i].segment_id].final_score),
+        )
         kept.pop(weakest)
         picked.pop(weakest)
     spares = sorted(
-        [s for s in ctx.segments.values() if s not in picked and s.id not in ctx.moments], key=lambda s: -ctx.rank(s)
+        [s for s in ctx.segments.values() if s not in picked and (s.id not in ctx.moments or s.id in ctx.must_use)],
+        key=lambda s: (s.id not in ctx.must_use, s.id in ctx.disliked, -ctx.rank(s)),
     )
     for beats in _split(total - sum(p.beats for p in kept), floor, ctx.filler_beats) or []:
         seg = next(
@@ -602,6 +643,17 @@ def director_prompt(ctx: Context, segments_table: str) -> str:
         f"Style: {ctx.style}. Output {ctx.width}x{ctx.height} at {fps_float(ctx.out_fps):.3f} fps.",
         f"Pilot's style note: {ctx.style_note or '(none)'}",
     ]
+    stars = sorted(usable_stars(ctx))
+    if stars:
+        lines.append(f"Pilot's must-use picks (starred in review; every one must be in the plan): {', '.join(stars)}")
+    optional = sorted(sid for sid in ctx.must_use - set(stars) if sid in ctx.segments)
+    if optional:
+        lines.append(
+            "Also starred, but not required because they are too short, share footage with another star, or don't "
+            f"all fit: {', '.join(optional)}. Use them if they fit."
+        )
+    if ctx.disliked:
+        lines.append("The pilot disliked these; use one only if nothing else fits: " + ", ".join(sorted(ctx.disliked)))
     if ctx.reel:
         lines += ["", REEL_BRIEF]
     lines += [
@@ -658,6 +710,7 @@ def segments_for_director(ctx: Context) -> str:
             f"{seg.id} | {seg.flight} | {seg.clip}@{format_timecode(seg.start, clip.fps)} | "
             f"{ctx.span_s(seg):.2f} | {ctx.full_beats(seg)} ({ctx.full_beats(seg) * spb:.1f} s) | "
             f"{moment.hold} | {moment.worth:.1f} | {moment.kind} | {','.join(moment.segment_ids)} | "
+            f"{'[STARRED] ' if seg.id in ctx.must_use else ''}{'[disliked] ' if seg.id in ctx.disliked else ''}"
             f"{moment.description}"
         )
     header = "id | flight | clip@time | usable_s | score | max_slowmo | flags | tags | description"
@@ -676,6 +729,8 @@ def segments_for_director(ctx: Context) -> str:
                 ("props", seg.claude and seg.claude.penalties.props_in_view),
                 ("horizon", seg.claude and seg.claude.penalties.horizon_chaos),
                 (seg.kind, seg.kind != "flight"),
+                ("STARRED", seg.id in ctx.must_use),
+                ("disliked", seg.id in ctx.disliked),
             )
             if on
         ]
@@ -724,6 +779,7 @@ def direct(ctx: Context, *, claude: Claude | None, model: str, effort: str, prog
     plan = plan_from_tool(call.input)
     for round_index in range(MAX_REPAIR_ROUNDS + 1):
         edl, violations = build_edl(ctx, plan)
+        violations += must_use_problems(ctx, plan)
         rounds.append([str(v) for v in violations])
         if not violations and edl is not None:
             return DirectorResult(plan=plan, edl=edl, rounds=rounds)
@@ -750,6 +806,7 @@ def direct(ctx: Context, *, claude: Claude | None, model: str, effort: str, prog
     progress("  repairs exhausted; the deterministic fixer finishes the plan")
     fixed = fix(ctx, plan)
     edl, violations = build_edl(ctx, fixed)
+    violations += must_use_problems(ctx, fixed)
     rounds.append([str(v) for v in violations])
     if not violations and edl is not None:
         return DirectorResult(plan=fixed, edl=edl, rounds=rounds, fixed=True)
