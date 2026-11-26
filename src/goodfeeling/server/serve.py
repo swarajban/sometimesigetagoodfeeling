@@ -15,6 +15,7 @@ import webbrowser
 from pathlib import Path
 
 HOST = "127.0.0.1"
+DEFAULT_PORT = 8765
 WEB_DIR = Path(__file__).resolve().parents[3] / "web"
 
 
@@ -59,18 +60,31 @@ def supervise(worker: Child, stopping: threading.Event) -> None:
         backoff = min(30.0, backoff * 2)
 
 
-def serve(port: int, data_root: str | None, open_browser: bool, dev: bool, dev_port: int) -> None:
+def free_port(port: int | None) -> int:
+    """The given port if it is free; with none given, the first free one from DEFAULT_PORT up."""
+    candidates = [port] if port is not None else range(DEFAULT_PORT, DEFAULT_PORT + 20)
+    for candidate in candidates:
+        with socket.socket() as probe:
+            try:
+                probe.bind((HOST, candidate))
+            except OSError:
+                continue
+        if candidate != DEFAULT_PORT and port is None:
+            print(f"Port {DEFAULT_PORT} is in use by another program; using {candidate}", flush=True)
+        return candidate
+    if port is not None:
+        raise SystemExit(f"Port {port} is already in use by another program; try --port {port + 1}")
+    raise SystemExit(f"Ports {DEFAULT_PORT}-{DEFAULT_PORT + 19} are all in use; pick one with --port")
+
+
+def serve(port: int | None, data_root: str | None, open_browser: bool, dev: bool, dev_port: int) -> None:
     import uvicorn
 
     from goodfeeling import DISPLAY_NAME
     from goodfeeling.server.app import create_app
     from goodfeeling.settings import load_settings
 
-    with socket.socket() as probe:
-        try:
-            probe.bind((HOST, port))
-        except OSError:
-            raise SystemExit(f"Port {port} is already in use by another program; try --port {port + 1}") from None
+    port = free_port(port)
     root = load_settings().resolved_data_root(data_root)
     app = create_app(root)
     env = {**os.environ, "GOODFEELING_DATA_ROOT": str(root), "PYTHONUNBUFFERED": "1"}
