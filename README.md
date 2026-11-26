@@ -59,6 +59,11 @@ cd web && npm run gen:api            # after changing the API: regenerate src/ap
 cd web && npm run build              # typecheck and build into web/dist, which serve uses when not in --dev
 ```
 
+Requests that change something must carry an `X-Goodfeeling: 1` header (the web app sends it), and the server only
+answers to `127.0.0.1` and `localhost`, so other web pages can't drive it. To serve it behind a tunnel or preview
+proxy, list the extra host names in `GOODFEELING_ALLOWED_HOSTS` (comma-separated), and set `GOODFEELING_LOCK_SPEND=1`
+so nobody can change the API key or the spend limit from the browser.
+
 `--dev` runs `npm install` the first time if `web/node_modules` is missing. The web app is React, TypeScript, and
 Vite with TanStack Query and Tailwind CSS; its API types are generated, so a server change that breaks the UI fails
 the typecheck.

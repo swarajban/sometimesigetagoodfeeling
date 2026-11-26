@@ -879,6 +879,8 @@ def create_app(data_root: Path | None = None) -> FastAPI:
     def put_settings(update: m.SettingsUpdate):
         from goodfeeling.pipeline.pacing import parse_pace
 
+        if os.environ.get("GOODFEELING_LOCK_SPEND") and (update.api_key is not None or update.max_cost_usd is not None):
+            raise HTTPException(403, "the API key and spend limit are locked on this server")
         path = config_path()
         raw = json.loads(path.read_text()) if path.exists() else {}
         for key in ("models", "effort", "weights"):
