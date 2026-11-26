@@ -75,6 +75,7 @@ the typecheck.
 uv run goodfeeling run ./footage --music song.mp3 --length 150 --style fast --res 1080
 uv run goodfeeling run ./footage --music song.mp3 --music-start 1:20 --length 120
 uv run goodfeeling run ./footage --music song.mp3 --format reel
+uv run goodfeeling run ./footage --music song.mp3 --title "Sometimes I get a good feeling" --title "Thornton Beach" --title "Nov 25, 2026"
 uv run goodfeeling music song.mp3 --length 120
 uv run goodfeeling score ./footage
 uv run goodfeeling render --from-edl "~/Movies/Good Feeling/projects/footage/edits/edl.json"
@@ -110,6 +111,23 @@ director call is new.
 
 Each shot in the EDL has an optional `crop_x` (0 = keep the left edge, 0.5 = centre, the default, 1 = the right
 edge). Set it by hand for a shot whose subject is off-centre, then re-render with `render --from-edl`.
+
+### Intro title
+
+`--title` (repeatable, one line each; also three fields on the Import screen) draws a title over the opening shot:
+the first line large in Cormorant Garamond, the rest smaller in letter-spaced Jost capitals, centred, with a soft
+shadow only behind the letters. It fades in on the first beat over about 1 s, holds about 4 s and fades out over
+about 1 s, each a whole number of beats, and scales with the output (a reel breaks a long first line in two). The
+director is told to open on a steady shot with calm space that lasts until the title is gone. The EDL keeps it as
+one optional object, which `render --from-edl` honours, so the wording or timing can be changed by hand:
+
+```json
+"title": { "lines": ["Sometimes I get a good feeling", "Thornton Beach", "Nov 25, 2026"], "start_frame": 0,
+           "fade_in_frames": 56, "hold_frames": 250, "fade_out_frames": 83, "style": "film" }
+```
+
+The fonts are bundled under `src/goodfeeling/assets/fonts/` with their SIL Open Font License files, so the title
+looks the same on every machine and nothing depends on ffmpeg's drawtext.
 
 ### Shot length comes from the content
 

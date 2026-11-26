@@ -25,6 +25,11 @@ def plan_markdown(result: DirectorResult, ctx: Context, meter: Meter | None = No
         f"- Music: {fmt(ctx.music.beats[ctx.window.start_beat])} to "
         f"{fmt(ctx.music.beats[ctx.window.start_beat] + ctx.window.beats * spb)} of the track "
         f"(from beat {ctx.window.start_beat}, an estimated downbeat)",
+        *(
+            [f"- Title: {' / '.join(edl.title.lines)}, until {format_timecode(edl.title.end_frame, edl.output.fps)}"]
+            if edl.title
+            else []
+        ),
         f"- Planned by: {plan.source}"
         + (" (repaired by the deterministic fixer)" if result.fixed else "")
         + (" (deterministic selector)" if result.fallback and plan.source == "deterministic" else ""),

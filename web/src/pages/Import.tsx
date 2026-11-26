@@ -48,6 +48,7 @@ export function Import() {
   const [lengthTouched, setLengthTouched] = useState(false)
   const [pace, setPace] = useState<string>('')
   const [musicStart, setMusicStart] = useState('')
+  const [title, setTitle] = useState(['', '', ''])
 
   useEffect(() => {
     if (!lengthTouched) setLength(format === 'reel' ? '30' : '150')
@@ -218,6 +219,22 @@ export function Import() {
           </div>
         </Panel>
 
+        <Panel title="Intro title">
+          <div className="space-y-2">
+            {['Title, large (e.g. the drone)', 'Place', 'Date'].map((placeholder, i) => (
+              <TextInput
+                key={placeholder}
+                value={title[i]}
+                placeholder={placeholder}
+                onChange={(e) => setTitle(title.map((line, j) => (j === i ? e.target.value : line)))}
+              />
+            ))}
+            <p className="text-[11.5px] text-zinc-500">
+              Optional. Drawn over the opening shot for about five seconds, fading in on the first beat.
+            </p>
+          </div>
+        </Panel>
+
         <div className="flex items-center gap-3">
           <Button
             tone="primary"
@@ -234,6 +251,7 @@ export function Import() {
                 length: lengthNum,
                 pace: pace || null,
                 music_start: musicStart || null,
+                title: title.some((line) => line.trim()) ? title.filter((line) => line.trim()) : null,
               })
             }
           >

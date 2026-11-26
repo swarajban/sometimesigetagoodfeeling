@@ -25,7 +25,7 @@ from goodfeeling.pipeline.render import render_problems
 from goodfeeling.pipeline.signals import hamming
 from goodfeeling.pipeline.stretch import EditWindow
 from goodfeeling.schemas.clip import ClipInfo, FlightInfo
-from goodfeeling.schemas.edl import EDL, MusicRef, Output, Shot, Source
+from goodfeeling.schemas.edl import EDL, MusicRef, Output, Shot, Source, Title
 from goodfeeling.schemas.moment import Moment
 from goodfeeling.schemas.music import MusicAnalysis, MusicSection
 from goodfeeling.schemas.plan import EditPlan, PlannedShot
@@ -72,6 +72,7 @@ class Context:
     disliked: set[str] = field(default_factory=set)
     notes: list[str] = field(default_factory=list)
     limited: bool = False
+    title: Title | None = None
 
     @property
     def seconds_per_beat(self) -> float:
@@ -162,6 +163,45 @@ class Context:
             return seg.final_score
         centre = min(1.5, max(0.5, self.centre.get(seg.id, 1.0)))
         return seg.final_score + 1.5 * (centre - 1.0)
+
+
+def make_title(lines: list[str], music: MusicAnalysis, window: EditWindow) -> Title:
+    """A title that fades in from the first beat over about 1 s, holds about 4 s and fades out over about 1 s,
+    each a whole number of beats, so it lands and leaves on the music."""
+    spb = 60.0 / music.tempo
+    fade_in = max(1, round(1.0 / spb))
+    hold = max(1, round(4.0 / spb))
+    fade_out = max(1, round(1.2 / spb))
+    frame = window.frame_of
+    return Title(
+        lines=lines,
+        start_frame=frame(0),
+        fade_in_frames=frame(fade_in) - frame(0),
+        hold_frames=frame(fade_in + hold) - frame(fade_in),
+        fade_out_frames=frame(fade_in + hold + fade_out) - frame(fade_in + hold),
+    )
+
+
+def title_beats(ctx: Context) -> int:
+    """Beats from the edit's start until the title has faded out."""
+    if ctx.title is None:
+        return 0
+    return next(i for i, f in enumerate(ctx.window.frames) if f >= ctx.title.end_frame)
+
+
+def title_problems(ctx: Context, edl: EDL | None) -> list[Violation]:
+    if ctx.title is None or edl is None:
+        return []
+    first = edl.timeline()[0]
+    if first.length >= ctx.title.end_frame:
+        return []
+    return [
+        Violation(
+            0,
+            "title",
+            f"the title shows for the first {title_beats(ctx)} beats; the opening shot must last at least that long",
+        )
+    ]
 
 
 @dataclass
@@ -307,6 +347,10 @@ def build_edl(ctx: Context, plan: EditPlan) -> tuple[EDL | None, list[Violation]
             violations.append(Violation(i, "reason", "every shot needs a reason"))
         held = length / fps_float(ctx.out_fps)
         limit, why = ctx.max_hold_s(seg)
+        if i == 0 and ctx.title is not None:
+            title_s = title_beats(ctx) * ctx.seconds_per_beat
+            if title_s + ctx.seconds_per_beat > limit:
+                limit, why = title_s + ctx.seconds_per_beat, f"the opening shot may hold the title's {title_s:.1f} s"
         if held > limit + 1e-6:
             violations.append(Violation(i, "hold", f"held {held:.1f} s; {why}"))
         transition = planned.transition if shots else "cut"
@@ -366,7 +410,11 @@ def make_edl(ctx: Context, shots: list[Shot]) -> EDL:
         fade_out_frames=round(fps * (1.0 if ends_with_song else 2.0)),
     )
     return EDL(
-        output=Output(width=ctx.width, height=ctx.height, fps=ctx.out_fps), music=music, sources=sources, shots=shots
+        output=Output(width=ctx.width, height=ctx.height, fps=ctx.out_fps),
+        music=music,
+        sources=sources,
+        shots=shots,
+        title=ctx.title,
     )
 
 
@@ -756,6 +804,16 @@ def director_prompt(ctx: Context, segments_table: str) -> str:
         lines.append("The pilot disliked these; use one only if nothing else fits: " + ", ".join(sorted(ctx.disliked)))
     if ctx.reel:
         lines += ["", REEL_BRIEF]
+    if ctx.title is not None:
+        beats = title_beats(ctx)
+        lines += [
+            "",
+            f"A title is drawn over the opening ({' / '.join(ctx.title.lines)}). It fades in on the first beat and is "
+            f"gone after {beats} beats ({beats * spb:.1f} s). Open on one steady shot that suits text: calm space "
+            "such as sky, sea or a wide slow approach, not a busy fast pass or a hard roll. It must last at least "
+            f"{beats} beats so no cut falls under the title; the opening shot may hold that long even if it is "
+            "ordinary footage.",
+        ]
     lines += [
         "",
         f"The edit uses the track from {ctx.music.beats[ctx.window.start_beat]:.2f} s. Music sections inside the "
@@ -882,7 +940,7 @@ def direct(ctx: Context, *, claude: Claude | None, model: str, effort: str, prog
     plan = plan_from_tool(call.input)
     for round_index in range(MAX_REPAIR_ROUNDS + 1):
         edl, violations = build_edl(ctx, plan)
-        violations += must_use_problems(ctx, plan)
+        violations += must_use_problems(ctx, plan) + title_problems(ctx, edl)
         rounds.append([str(v) for v in violations])
         if not violations and edl is not None:
             return DirectorResult(plan=plan, edl=edl, rounds=rounds, notes=notes)

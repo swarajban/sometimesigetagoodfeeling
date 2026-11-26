@@ -20,6 +20,7 @@ from goodfeeling.media.color import REC709_TAGS, to_rec709
 from goodfeeling.media.encoders import Encoder
 from goodfeeling.media.ffmpeg import count_video_packets, ffprobe_json, run_ffmpeg
 from goodfeeling.media.fingerprint import fingerprint
+from goodfeeling.media.title import TITLE_VERSION, render_title
 from goodfeeling.schemas.edl import EDL, Shot
 from goodfeeling.timebase import as_fraction, mp4_timescale, seek_seconds
 
@@ -67,6 +68,8 @@ def render_problems(edl: EDL) -> list[tuple[int, str]]:
             problems.append((cur.index, f"shot {cur.shot.id}: too short for its {h}-frame crossfade"))
         elif prev.shot.out + tail > src_prev.frames or cur.shot.in_ - head < 0:
             problems.append((cur.index, f"shot {cur.shot.id}: not enough footage outside the shots for the crossfade"))
+    if edl.title is not None and edl.title.end_frame > edl.total_frames():
+        problems.append((0, f"the title runs to frame {edl.title.end_frame}, past the edit's {edl.total_frames()}"))
     return problems
 
 
@@ -145,6 +148,38 @@ def _fades(piece: Piece, edl: EDL) -> list[str]:
     return out
 
 
+def _title_offset(edl: EDL, piece: Piece) -> int | None:
+    """Frames from the piece's start to the title's, when the title shows during the piece."""
+    title = edl.title
+    if title is None or title.end_frame <= piece.start or title.start_frame >= piece.start + piece.count:
+        return None
+    return title.start_frame - piece.start
+
+
+def _title_input(edl: EDL, piece: Piece, index: int, cache_dir: Path) -> tuple[list[str], str]:
+    title = edl.title
+    w, h = edl.output.width, edl.output.height
+    stamp = json.dumps([TITLE_VERSION, title.model_dump(), w, h], sort_keys=True).encode()
+    png = cache_dir / f"title-{hashlib.sha256(stamp).hexdigest()[:16]}.png"
+    if not png.exists():
+        render_title(title, w, h, png)
+    fps = as_fraction(edl.output.fps)
+    fade_in, hold, fade_out = (float(n / fps) for n in (title.fade_in_frames, title.hold_frames, title.fade_out_frames))
+    chain = ["format=rgba"]
+    if fade_in:
+        chain.append(f"fade=t=in:st=0:d={fade_in:.6f}:alpha=1")
+    if fade_out:
+        chain.append(f"fade=t=out:st={fade_in + hold:.6f}:d={fade_out:.6f}:alpha=1")
+    offset = float(_title_offset(edl, piece) / fps)
+    if offset >= 0:
+        chain.append(f"setpts=PTS-STARTPTS+{offset:.6f}/TB")
+    else:
+        chain += [f"trim=start={-offset:.6f}", "setpts=PTS-STARTPTS"]
+    num, den = edl.output.fps
+    args = ["-loop", "1", "-framerate", f"{num}/{den}", "-t", f"{fade_in + hold + fade_out:.6f}", "-i", str(png)]
+    return args, f"[{index}:v]{','.join(chain)}[t]"
+
+
 def _content_id(path: str | None) -> str | None:
     return fingerprint(path) if path and Path(path).exists() else path
 
@@ -176,6 +211,9 @@ def piece_key(edl: EDL, piece: Piece, encoder: Encoder) -> str:
         "out": edl.output.model_dump(mode="json"),
         "enc": list(encoder.args),
     }
+    offset = _title_offset(edl, piece)
+    if offset is not None:
+        payload["title"] = {**edl.title.model_dump(), "offset": offset, "v": TITLE_VERSION}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:32]
 
 
@@ -189,16 +227,21 @@ def render_piece(edl: EDL, piece: Piece, encoder: Encoder, out: Path) -> Path:
         args, chain = _span_input(edl, span)
         inputs += args
         chains.append(chain)
-    fades = _fades(piece, edl)
-    tail = [*fades, "tpad=stop_mode=clone:stop=1"]
+    tail = ",".join([*_fades(piece, edl), "tpad=stop_mode=clone:stop=1"])
     if piece.kind == "crossfade":
         duration = float(piece.count / as_fraction(edl.output.fps))
         graph = (
             f"[0:v]{chains[0]}[a];[1:v]{chains[1]}[b];"
-            f"[a][b]xfade=transition=fade:duration={duration:.6f}:offset=0,{','.join(tail)}[v]"
+            f"[a][b]xfade=transition=fade:duration={duration:.6f}:offset=0[base]"
         )
     else:
-        graph = f"[0:v]{chains[0]},{','.join(tail)}[v]"
+        graph = f"[0:v]{chains[0]}[base]"
+    if _title_offset(edl, piece) is None:
+        graph += f";[base]{tail}[v]"
+    else:
+        args, title_chain = _title_input(edl, piece, len(piece.spans), out.parent)
+        inputs += args
+        graph += f";{title_chain};[base][t]overlay=0:0:eof_action=pass,{tail}[v]"
     run_ffmpeg(
         [
             *inputs,

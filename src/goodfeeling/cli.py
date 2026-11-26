@@ -111,6 +111,10 @@ def run(
     model_score: Annotated[str | None, typer.Option(help="Model for segment scoring.")] = None,
     model_understand: Annotated[str | None, typer.Option(help="Model for the session summary.")] = None,
     model_direct: Annotated[str | None, typer.Option(help="Model for directing and repair.")] = None,
+    title: Annotated[
+        list[str] | None,
+        typer.Option(help="Intro title over the opening shot, one line per --title (the first is the large one)."),
+    ] = None,
 ) -> None:
     """Ingest, score, analyse the music, direct, and render final.mp4."""
     from goodfeeling.pipeline.run import CostRefused, RunOptions
@@ -151,6 +155,7 @@ def run(
                 music_start=start_s,
                 music_end=end_s,
                 pace=pace_value,
+                title=[line for line in title or [] if line.strip()] or None,
             ),
             settings,
             confirm=_confirm(yes),

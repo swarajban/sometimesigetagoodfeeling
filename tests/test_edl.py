@@ -57,6 +57,20 @@ def test_round_trip_and_timecodes(tmp_path):
     assert edl.total_frames() == 360 + 150
 
 
+def test_title_is_optional_and_round_trips(tmp_path):
+    plain = EDL.model_validate(sample())
+    assert plain.title is None
+    assert "title" not in json.loads(plain.save(tmp_path / "plain.json").read_text())
+    data = sample()
+    data["title"] = {"lines": ["Sometimes I get a good feeling", "Thornton Beach"], "hold_frames": 250}
+    titled = EDL.load(EDL.model_validate(data).save(tmp_path / "titled.json"))
+    assert titled.title.lines[1] == "Thornton Beach"
+    assert titled.title.end_frame == 30 + 250 + 30
+    data["title"]["lines"] = ["  "]
+    with pytest.raises(ValidationError):
+        EDL.model_validate(data)
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

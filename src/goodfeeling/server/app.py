@@ -748,6 +748,7 @@ def create_app(data_root: Path | None = None) -> FastAPI:
             "pace": parse_pace(req.pace) if req.pace else None,
             "project": req.project,
             "data_root": str(root),
+            "title": [line.strip() for line in req.title or [] if line.strip()] or None,
         }
         return m.ImportResult(project=project.slug, job=enqueue_run(project, options, edit))
 
