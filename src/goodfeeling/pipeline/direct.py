@@ -62,6 +62,8 @@ class Context:
     moments: dict[str, Moment] = field(default_factory=dict)
     must_use: set[str] = field(default_factory=set)
     disliked: set[str] = field(default_factory=set)
+    notes: list[str] = field(default_factory=list)
+    limited: bool = False
 
     @property
     def seconds_per_beat(self) -> float:
@@ -133,7 +135,7 @@ class Context:
             if moment.hold == "short":
                 return filler, f"{seg.id} is marked as a short hit, so at most {filler:.1f} s"
             return self.span_s(seg) + 0.6, f"{seg.id}'s move lasts {self.span_s(seg):.1f} s; don't pad it with dead air"
-        if seg.final_score >= LONG_SCORE:
+        if seg.final_score >= LONG_SCORE or self.limited:
             return self.span_s(seg) + 1.0, f"{seg.id} is {self.span_s(seg):.1f} s of footage"
         return filler, (
             f"{seg.id} scores {seg.final_score:.1f}; only marked moments or segments scoring "
@@ -170,6 +172,7 @@ class DirectorResult:
     rounds: list[list[str]] = field(default_factory=list)
     fixed: bool = False
     fallback: bool = False
+    notes: list[str] = field(default_factory=list)
 
 
 def extents(segments: list[Segment]) -> dict[str, tuple[int, int]]:
@@ -428,11 +431,19 @@ def _overlaps(ctx: Context, seg: Segment, others: list[Segment]) -> bool:
         olo, ohi = ctx.bounds(other)
         if lo < ohi and olo < hi:
             return True
-        if hamming(other.phash, seg.phash) <= DUPLICATE_HAMMING and max(other.start, seg.start) - min(
-            other.end, seg.end
-        ) <= DUPLICATE_GAP_S * fps_float(ctx.clips[seg.clip].fps):
-            return True
-    return False
+    return _near_duplicate(ctx, seg, others)
+
+
+def _near_duplicate(ctx: Context, seg: Segment, others: list[Segment]) -> bool:
+    """The validator's near_duplicate rule: same clip, close in time, and alike to look at."""
+    return any(
+        other.clip == seg.clip
+        and other.id != seg.id
+        and hamming(other.phash, seg.phash) <= DUPLICATE_HAMMING
+        and max(other.start, seg.start) - min(other.end, seg.end)
+        <= DUPLICATE_GAP_S * fps_float(ctx.clips[seg.clip].fps)
+        for other in others
+    )
 
 
 def _split(total: int, low: int, high: int) -> list[int] | None:
@@ -459,59 +470,135 @@ def _place_star(
     return [*rest[:position], item, *rest[position:]]
 
 
+def _longest_beat_s(ctx: Context) -> float:
+    frames = ctx.window.frames
+    return max(b - a for a, b in zip(frames, frames[1:], strict=False)) / fps_float(ctx.out_fps)
+
+
 def select(ctx: Context) -> EditPlan:
     """Deterministic plan: the best moments played in full, short connecting shots between them, the biggest
-    moment on the peak (a reel opens on it)."""
+    moment on the peak (a reel opens on it).
+
+    It always produces a plan from whatever footage there is: shots are placed on the frames they will actually use,
+    so one clip can give several shots; when connecting shots run out, the shots already chosen hold as long as
+    their content allows; and when that still doesn't fill the stretch, the edit gets shorter (ctx.window shrinks
+    and ctx.notes says so). It fails only when no clean stretch of footage can hold a single shot."""
     total, floor, filler = ctx.window.beats, ctx.floor_beats, ctx.filler_beats
+    beat_s = _longest_beat_s(ctx)
     required = usable_stars(ctx)
     clean = [
         s
         for s in ctx.segments.values()
         if s.id in required or not (s.signals.crash or (s.claude and s.claude.penalties.crash))
     ]
+
+    def need(seg: Segment, beats: int) -> int:
+        return math.ceil(beats * beat_s * fps_float(ctx.clips[seg.clip].fps)) + 1
+
+    def cap(seg: Segment, beats: int) -> int:
+        """The most beats, up to `beats`, that the footage around `seg` and its hold limit allow."""
+        lo, hi = ctx.bounds(seg)
+        limit = ctx.max_hold_s(seg)[0]
+        while beats > 0 and (beats * beat_s > limit + 1e-6 or need(seg, beats) > hi - lo):
+            beats -= 1
+        return beats
+
+    def place(seg: Segment, beats: int, others: list[list]) -> int | None:
+        """A start frame for `beats` of `seg` that uses no frame another chosen shot uses, near its centre."""
+        lo, hi = ctx.bounds(seg)
+        n = need(seg, beats)
+        first, last = max(lo, min(seg.start, hi - n)), hi - n
+        if last < first or _near_duplicate(ctx, seg, [o[0] for o in others]):
+            return None
+        taken = [(o[2], o[2] + need(o[0], o[1])) for o in others if o[0].clip == seg.clip]
+        centre = min(last, max(first, seg.start + (seg.frames - n) // 2))
+        for start in sorted(
+            {centre, first, last, *(b for _, b in taken), *(a - n for a, _ in taken)}, key=lambda s: abs(s - centre)
+        ):
+            if first <= start <= last and all(start + n <= a or start >= b for a, b in taken):
+                return start
+        return None
+
+    def add(seg: Segment, beats: int) -> bool:
+        start = place(seg, beats, chosen)
+        if start is not None:
+            chosen.append([seg, beats, start])
+        return start is not None
+
     moments = sorted(
         [s for s in clean if s.id in ctx.moments and ctx.moments[s.id].hold == "full"],
         key=lambda s: (s.id not in required, s.id in ctx.disliked, -ctx.rank(s)),
     )
     budget = round(total * (1 - ctx.rules.filler_share))
-    chosen: list[tuple[Segment, int]] = []
+    chosen: list[list] = []
     used = 0
     for seg in moments:
-        beats = min(ctx.full_beats(seg), total)
+        beats = cap(seg, min(ctx.full_beats(seg), total))
         over = used + beats > budget and chosen and seg.id not in required
-        if over or used + beats > total or _overlaps(ctx, seg, [c for c, _ in chosen]):
+        if beats < floor or over or used + beats > total:
             continue
-        chosen.append((seg, beats))
-        used += beats
+        if add(seg, beats):
+            used += beats
     fillers = sorted(
         [s for s in clean if s.id not in ctx.moments or (s.id in required and ctx.moments[s.id].hold != "full")],
         key=lambda s: (s.id not in required, s.id in ctx.disliked, -ctx.rank(s)),
     )
     if 0 < total - used < floor and chosen:
-        index = max(range(len(chosen)), key=lambda i: chosen[i][1])
-        seg, beats = chosen[index]
+        item = max(chosen, key=lambda c: c[1])
         cut = floor - (total - used)
-        if beats - cut >= floor:
-            chosen[index] = (seg, beats - cut)
+        if item[1] - cut >= floor:
+            item[1] -= cut
             used -= cut
-    parts = _split(total - used, floor, filler) or []
-    if total - used and not parts:
-        seg, beats = chosen[-1]
-        chosen[-1] = (seg, beats + total - used)
-    for beats in parts:
-        seg = next(
-            (
-                s
-                for s in fillers
-                if _seconds(ctx, s, s.frames) >= beats * ctx.seconds_per_beat + 0.3
-                and not _overlaps(ctx, s, [c for c, _ in chosen])
-            ),
-            None,
+    while total - used >= floor:
+        left = total - used
+        for seg in fillers:
+            beats = min(cap(seg, filler), left)
+            short = floor - (left - beats)
+            if 0 < left - beats < floor and beats - short >= floor:
+                beats -= short
+            if beats >= floor and add(seg, beats):
+                fillers.remove(seg)
+                used += beats
+                break
+        else:
+            break
+
+    def grow() -> int:
+        """Let the chosen shots, the best first, hold longer to fill what connecting shots couldn't."""
+        grown = 0
+        for item in sorted(chosen, key=lambda c: (c[0].id not in ctx.moments, -ctx.rank(c[0]))):
+            while used + grown < total and cap(item[0], item[1] + 1) > item[1]:
+                start = place(item[0], item[1] + 1, [c for c in chosen if c is not item])
+                if start is None:
+                    break
+                item[1], item[2] = item[1] + 1, start
+                grown += 1
+        return grown
+
+    used += grow()
+    if total - used >= floor and chosen:
+        ctx.limited = True
+        grown = grow()
+        used += grown
+        if grown:
+            ctx.notes.append("The footage was limited, so some shots hold longer than they normally would.")
+    if not chosen:
+        raise RuntimeError(
+            f"no clean stretch of footage is long enough for one {floor * ctx.seconds_per_beat:.1f} s shot"
         )
-        if seg is None:
-            raise RuntimeError("not enough usable footage for this length; shorten --length")
-        fillers.remove(seg)
-        chosen.append((seg, beats))
+    if not ctx.moments:
+        ctx.notes.append(
+            "No standout moves were found in this footage, so the edit is simpler: short shots of the best of it."
+        )
+    if used < total:
+        ctx.notes.append(
+            f"The footage was limited, so the edit runs {used * ctx.seconds_per_beat:.1f} s instead of "
+            f"{total * ctx.seconds_per_beat:.1f} s."
+        )
+        window = ctx.window
+        ctx.window = EditWindow(window.start_beat, used, window.start_frame, window.frames[: used + 1])
+    starts = {c[0].id: c[2] for c in chosen}
+    chosen = [(c[0], c[1]) for c in chosen]
     order = sorted(chosen, key=lambda item: ctx.chrono_key(item[0]))
     order_note = ""
     stars = sorted([c for c, _ in chosen if c.id in ctx.moments], key=lambda s: -ctx.rank(s))
@@ -526,7 +613,7 @@ def select(ctx: Context) -> EditPlan:
     beat = 0
     for i, (seg, beats) in enumerate(order):
         held = beats * ctx.seconds_per_beat
-        offset = max(0.0, (_seconds(ctx, seg, seg.frames) - held) / 2)
+        offset = max(0.0, _seconds(ctx, seg, starts[seg.id] - seg.start))
         moment = ctx.moments.get(seg.id)
         label = ctx.section_label(beat)
         role = "opening" if i == 0 else "closing" if i == len(order) - 1 else ("peak" if moment else "support")
@@ -540,7 +627,7 @@ def select(ctx: Context) -> EditPlan:
             PlannedShot(
                 segment_id=seg.id,
                 beats=beats,
-                start_offset_s=round(offset, 3),
+                start_offset_s=offset,
                 speed=1.0,
                 transition="cut",
                 role=role,
@@ -643,6 +730,8 @@ def director_prompt(ctx: Context, segments_table: str) -> str:
         f"Style: {ctx.style}. Output {ctx.width}x{ctx.height} at {fps_float(ctx.out_fps):.3f} fps.",
         f"Pilot's style note: {ctx.style_note or '(none)'}",
     ]
+    if ctx.notes:
+        lines.append("Footage: " + " ".join(ctx.notes))
     stars = sorted(usable_stars(ctx))
     if stars:
         lines.append(f"Pilot's must-use picks (starred in review; every one must be in the plan): {', '.join(stars)}")
@@ -760,12 +849,15 @@ def plan_from_tool(data: dict, source: str = "claude") -> EditPlan:
 
 def direct(ctx: Context, *, claude: Claude | None, model: str, effort: str, progress=print) -> DirectorResult:
     rounds: list[list[str]] = []
+    deterministic = select(ctx)
+    notes = list(ctx.notes)
+    for note in notes:
+        progress(f"  note: {note}")
     if claude is None:
-        plan = select(ctx)
-        edl, violations = build_edl(ctx, plan)
+        edl, violations = build_edl(ctx, deterministic)
         if violations or edl is None:
             raise RuntimeError("deterministic plan failed validation: " + "; ".join(map(str, violations)))
-        return DirectorResult(plan=plan, edl=edl, rounds=rounds, fallback=True)
+        return DirectorResult(plan=deterministic, edl=edl, rounds=rounds, fallback=True, notes=notes)
     messages = [{"role": "user", "content": director_prompt(ctx, segments_for_director(ctx))}]
     call, conversation = claude.call_tool(
         step="direct",
@@ -782,7 +874,7 @@ def direct(ctx: Context, *, claude: Claude | None, model: str, effort: str, prog
         violations += must_use_problems(ctx, plan)
         rounds.append([str(v) for v in violations])
         if not violations and edl is not None:
-            return DirectorResult(plan=plan, edl=edl, rounds=rounds)
+            return DirectorResult(plan=plan, edl=edl, rounds=rounds, notes=notes)
         if round_index == MAX_REPAIR_ROUNDS:
             break
         progress(f"  plan has {len(violations)} problem(s); asking for repair {round_index + 1}/{MAX_REPAIR_ROUNDS}")
@@ -809,13 +901,12 @@ def direct(ctx: Context, *, claude: Claude | None, model: str, effort: str, prog
     violations += must_use_problems(ctx, fixed)
     rounds.append([str(v) for v in violations])
     if not violations and edl is not None:
-        return DirectorResult(plan=fixed, edl=edl, rounds=rounds, fixed=True)
+        return DirectorResult(plan=fixed, edl=edl, rounds=rounds, fixed=True, notes=notes)
     progress("  fixer could not satisfy every rule; using the deterministic selector")
-    plan = select(ctx)
-    edl, violations = build_edl(ctx, plan)
+    edl, violations = build_edl(ctx, deterministic)
     if violations or edl is None:
         raise RuntimeError("deterministic plan failed validation: " + "; ".join(map(str, violations)))
-    return DirectorResult(plan=plan, edl=edl, rounds=rounds, fixed=True, fallback=True)
+    return DirectorResult(plan=deterministic, edl=edl, rounds=rounds, fixed=True, fallback=True, notes=notes)
 
 
 def plan_json(result: DirectorResult) -> str:
@@ -826,6 +917,7 @@ def plan_json(result: DirectorResult) -> str:
                 "validation_rounds": result.rounds,
                 "fixed": result.fixed,
                 "fallback": result.fallback,
+                "notes": result.notes,
             },
             indent=2,
         )

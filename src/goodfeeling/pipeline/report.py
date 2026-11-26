@@ -30,6 +30,7 @@ def plan_markdown(result: DirectorResult, ctx: Context, meter: Meter | None = No
         + (" (deterministic selector)" if result.fallback and plan.source == "deterministic" else ""),
         "",
     ]
+    lines += [f"**Note:** {note}" for note in result.notes] + ([""] if result.notes else [])
     if plan.order_note:
         lines += [f"**Order:** {plan.order_note}", ""]
     lines += ["## Music sections", ""]
