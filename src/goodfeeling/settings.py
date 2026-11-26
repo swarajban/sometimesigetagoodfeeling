@@ -19,12 +19,14 @@ DEFAULT_DATA_ROOT = Path.home() / "Movies" / "Good Feeling"
 
 class StepModels(BaseModel):
     score: str = "claude-sonnet-5-5"
+    moments: str = "claude-sonnet-5-5"
     understand: str = "claude-opus-5-5"
     direct: str = "claude-opus-5-5"
 
 
 class StepEffort(BaseModel):
     score: str = "low"
+    moments: str = "low"
     understand: str = "medium"
     direct: str = "medium"
 
@@ -53,6 +55,7 @@ class Settings(BaseModel):
     effort: StepEffort = Field(default_factory=StepEffort)
     weights: Weights = Field(default_factory=Weights)
     style_note: str = ""
+    pace: str = "normal"
     lut: str | None = None
     stabilized_dir: str | None = None
     flight_gap_s: float = 90.0

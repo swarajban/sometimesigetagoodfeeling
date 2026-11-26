@@ -117,7 +117,7 @@ UNDERSTAND_TOOL = {
     },
 }
 
-DIRECT_PROMPT_VERSION = "direct-v1"
+DIRECT_PROMPT_VERSION = "direct-v3"
 
 DIRECT_SYSTEM = """You are the director of a beat-synced FPV highlight edit. You receive the scored segments \
 of one session, the music's beat grid and sections, the target length, a style, and notes from the pilot. \
@@ -128,8 +128,10 @@ How the plan works:
 back to back from beat 0 of the edit window, so every cut lands on a beat.
 - The total of all shots' beats must equal the target beat count you are given (a small tolerance is allowed).
 - A segment can be used at most once. Do not pick two segments that show the same moment.
-- A shot needs enough footage: segment usable seconds >= beats * seconds_per_beat * speed, plus a few frames \
-of handle on each side for a crossfade. Use start_offset_s to choose where inside the segment the shot starts.
+- A shot needs enough footage: beats * seconds_per_beat * speed, plus a few frames of handle on each side for a \
+crossfade. A segment offers usable_s on its own and extend_s including the clean footage around it; a longer \
+hold runs into that neighbouring footage. Two shots must never use the same footage. Use start_offset_s \
+(seconds from the segment's start, may push the shot past the segment's end) to place the shot.
 - speed is 1.0 by default. Values above 1.0 speed footage up. Slow motion (below 1.0) is allowed only for \
 segments whose max_slowmo says so (that needs a high source frame rate).
 - transition is "cut" or "crossfade" (a short dissolve centred on the beat; use it sparingly, for section \
@@ -141,8 +143,11 @@ Craft:
 - Open with something that sets the place or hooks immediately; close on a shot that lands, such as a reveal, \
 a pull-out, or a landing worth showing.
 - Put the strongest shots on the drop. Build tension before it.
-- Pacing is beats per cut, per music section. Fast style: short cuts (1-2 beats in the drop, 2-4 elsewhere). \
-Cinematic style: longer shots (4-8 beats), slower cuts, occasional crossfades.
+- Shot length comes from the content, not from a target average. A marked moment (ids m01, m02, ...) has a \
+natural span from approach to exit; when it's worth it, play it in full (full_beats is its span snapped to beats), \
+even 8-12 s. Trim a little if needed, but never pad a hold past the move with dead air. Ordinary segments are short \
+connecting shots or are left out. Fewer, longer cuts should come from the best moments taking more of the runtime, \
+not from stretching everything. Each reason must say why the shot gets the length it does.
 - Avoid segments flagged crash, blur or props unless the moment is worth it, and avoid back-to-back shots that \
 look alike.
 - Every shot needs a short reason tied to what the viewer sees and where it sits in the music.
@@ -180,7 +185,7 @@ DIRECT_TOOL = {
                     "additionalProperties": False,
                     "required": ["segment_id", "beats", "start_offset_s", "speed", "transition", "role", "reason"],
                     "properties": {
-                        "segment_id": {"type": "string"},
+                        "segment_id": {"type": "string", "description": "A moment id (m01) or a segment id."},
                         "beats": {"type": "integer"},
                         "start_offset_s": {"type": "number", "description": "Seconds into the segment to start."},
                         "speed": {"type": "number"},
@@ -196,6 +201,40 @@ DIRECT_TOOL = {
             },
             "order_note": {"type": "string", "description": "Why the order departs from chronology, or empty."},
             "closing_note": {"type": "string", "description": "One sentence on how the edit ends."},
+        },
+    },
+}
+
+MOMENT_PROMPT_VERSION = "moment-v1"
+
+MOMENT_SYSTEM = """You mark the natural span of one FPV move for an editor. You get a grid of frames sampled \
+evenly across a few seconds of one continuous clip, each labelled with its time in the clip, plus a scout's notes \
+on the strong parts. Find the single best move in it (a gap thread, a dive, a reveal, a proximity run, a chase, an \
+orbit) and say where it starts (the approach begins) and where it ends (after the exit, before it turns into \
+ordinary flying). Use the frame times; interpolate between frames when the move clearly starts or ends between \
+them. Do not include dead air before the approach or after the exit.
+
+hold: "full" if the move is worth playing in full (it builds and pays off), "short" if it only works as a quick \
+hit of a second or two, "skip" if nothing here is worth using. worth: 1-10 for how much the full move deserves \
+screen time. payoff_s: the time of the single best instant. Answer by calling mark_moment."""
+
+MOMENT_TOOL = {
+    "name": "mark_moment",
+    "description": "Mark the natural start and end of the best move in these frames, in seconds of the clip.",
+    "strict": True,
+    "input_schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["in_s", "out_s", "payoff_s", "kind", "hold", "worth", "description", "reason"],
+        "properties": {
+            "in_s": {"type": "number", "description": "Clip time where the move's approach begins."},
+            "out_s": {"type": "number", "description": "Clip time just after the exit."},
+            "payoff_s": {"type": "number", "description": "Clip time of the best instant."},
+            "kind": {"type": "string", "description": "gap, dive, reveal, proximity, chase, orbit, freestyle, other"},
+            "hold": {"type": "string", "enum": ["full", "short", "skip"]},
+            "worth": {"type": "integer", "description": "1 to 10."},
+            "description": {"type": "string", "description": "One sentence: what the move is."},
+            "reason": {"type": "string", "description": "One sentence: why this hold."},
         },
     },
 }

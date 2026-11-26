@@ -74,6 +74,54 @@ MIGRATIONS: list[str] = [
         current_revision INTEGER
     );
     """,
+    """
+    CREATE TABLE edl_revisions_v2 (
+        project_id INTEGER NOT NULL REFERENCES projects(id),
+        edit TEXT NOT NULL DEFAULT 'default',
+        revision INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        PRIMARY KEY (project_id, edit, revision)
+    );
+    INSERT INTO edl_revisions_v2 (project_id, edit, revision, path, origin, created_at)
+        SELECT project_id, 'default', revision, path, origin, created_at FROM edl_revisions;
+    DROP TABLE edl_revisions;
+    ALTER TABLE edl_revisions_v2 RENAME TO edl_revisions;
+    CREATE TABLE edits (
+        project_id INTEGER NOT NULL REFERENCES projects(id),
+        name TEXT NOT NULL,
+        format TEXT NOT NULL DEFAULT 'landscape',
+        current_revision INTEGER,
+        updated_at REAL NOT NULL,
+        PRIMARY KEY (project_id, name)
+    );
+    INSERT INTO edits (project_id, name, format, current_revision, updated_at)
+        SELECT project_id, 'default', 'landscape', current_revision, 0 FROM project_state;
+    DROP TABLE project_state;
+    """,
+    """
+    CREATE TABLE moment_cache (
+        key TEXT PRIMARY KEY,
+        fingerprint TEXT NOT NULL,
+        start_frame INTEGER NOT NULL,
+        end_frame INTEGER NOT NULL,
+        params TEXT NOT NULL,
+        model TEXT NOT NULL,
+        prompt_version TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        created_at REAL NOT NULL
+    );
+    CREATE TABLE moments (
+        project_id INTEGER NOT NULL REFERENCES projects(id),
+        moment_id TEXT NOT NULL,
+        clip_id TEXT NOT NULL,
+        start_frame INTEGER NOT NULL,
+        end_frame INTEGER NOT NULL,
+        moment_json TEXT NOT NULL,
+        PRIMARY KEY (project_id, moment_id)
+    );
+    """,
 ]
 
 
@@ -153,6 +201,28 @@ class Database:
                 json.dumps(result),
                 time.time(),
             ),
+        )
+
+    def cached_moment(self, key: str) -> dict[str, Any] | None:
+        row = self.execute("SELECT result_json FROM moment_cache WHERE key=?", (key,)).fetchone()
+        return json.loads(row["result_json"]) if row else None
+
+    def store_moment(
+        self,
+        key: str,
+        *,
+        fingerprint: str,
+        start: int,
+        end: int,
+        params: str,
+        model: str,
+        prompt_version: str,
+        result: dict[str, Any],
+    ) -> None:
+        self.execute(
+            "INSERT OR REPLACE INTO moment_cache (key, fingerprint, start_frame, end_frame, params, model, "
+            "prompt_version, result_json, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (key, fingerprint, start, end, params, model, prompt_version, json.dumps(result), time.time()),
         )
 
     def project_cost(self, project_id: int) -> float:

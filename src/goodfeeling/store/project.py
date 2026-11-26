@@ -15,6 +15,14 @@ from goodfeeling.store.db import Database
 log = logging.getLogger(__name__)
 
 SUBDIRS = ("proxies", "frames", "logs", "edits", "renders", "analysis")
+DEFAULT_EDIT = "default"
+_EDIT_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+
+
+def check_edit_name(name: str) -> str:
+    if not _EDIT_NAME.match(name) or name in {"revisions"}:
+        raise ValueError(f"edit name {name!r} must be lowercase letters, digits and dashes (max 40)")
+    return name
 
 
 def slugify(text: str) -> str:
@@ -74,21 +82,28 @@ class Project:
         target = self.root / rel
         return json.loads(target.read_text()) if target.exists() else None
 
-    def save_edl(self, edl: EDL, origin: str) -> Path:
-        """Write edits/edl.json plus a numbered revision, and move the revision pointer."""
+    def edit_path(self, edit: str, area: str, *parts: str) -> Path:
+        """`edits/...` or `renders/...` for the default edit; `edits/<name>/...`, `renders/<name>/...` for others."""
+        check_edit_name(edit)
+        return self.path(area, *parts) if edit == DEFAULT_EDIT else self.path(area, edit, *parts)
+
+    def save_edl(self, edl: EDL, origin: str, edit: str = DEFAULT_EDIT, edit_format: str = "landscape") -> Path:
+        """Write the edit's edl.json plus a numbered revision, and move that edit's revision pointer."""
         row = self.db.execute(
-            "SELECT COALESCE(MAX(revision),0) AS r FROM edl_revisions WHERE project_id=?", (self.id,)
+            "SELECT COALESCE(MAX(revision),0) AS r FROM edl_revisions WHERE project_id=? AND edit=?", (self.id, edit)
         ).fetchone()
         revision = int(row["r"]) + 1
-        rev_path = edl.save(self.path("edits", "revisions", f"{revision:04d}.json"))
-        edl.save(self.path("edits", "edl.json"))
+        rev_path = edl.save(self.edit_path(edit, "edits", "revisions", f"{revision:04d}.json"))
+        target = edl.save(self.edit_path(edit, "edits", "edl.json"))
+        now = time.time()
         self.db.execute(
-            "INSERT INTO edl_revisions (project_id, revision, path, origin, created_at) VALUES (?,?,?,?,?)",
-            (self.id, revision, str(rev_path), origin, time.time()),
+            "INSERT INTO edl_revisions (project_id, edit, revision, path, origin, created_at) VALUES (?,?,?,?,?,?)",
+            (self.id, edit, revision, str(rev_path), origin, now),
         )
         self.db.execute(
-            "INSERT INTO project_state (project_id, current_revision) VALUES (?,?) "
-            "ON CONFLICT(project_id) DO UPDATE SET current_revision=excluded.current_revision",
-            (self.id, revision),
+            "INSERT INTO edits (project_id, name, format, current_revision, updated_at) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(project_id, name) DO UPDATE SET format=excluded.format, "
+            "current_revision=excluded.current_revision, updated_at=excluded.updated_at",
+            (self.id, edit, edit_format, revision, now),
         )
-        return self.root / "edits" / "edl.json"
+        return target

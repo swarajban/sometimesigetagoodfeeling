@@ -105,3 +105,22 @@ def test_render_refuses_to_write_into_footage(result, media):
     )
     assert cli.exit_code != 0
     assert not (media["footage"] / "x.mp4").exists()
+
+
+def test_reel_sits_beside_the_landscape_edit(result, media):
+    out, data_root = result
+    landscape = {p: p.read_bytes() for p in (out.outputs["edl"], out.outputs["final"])}
+    settings = Settings()
+    settings.render.x264_preset = "ultrafast"
+    reel = run(
+        RunOptions(
+            footage=media["footage"], music=media["music"], length=8, format="reel", data_root=data_root, no_ai=True
+        ),
+        settings,
+        progress=lambda _: None,
+    )
+    assert reel.outputs["edl"] == out.project.root / "edits" / "reel" / "edl.json"
+    assert reel.outputs["final"] == out.project.root / "renders" / "reel" / "final.mp4"
+    edl = EDL.load(reel.outputs["edl"])
+    assert (edl.output.width, edl.output.height) == (1080, 1920)
+    assert all(p.read_bytes() == data for p, data in landscape.items())

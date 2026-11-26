@@ -47,6 +47,7 @@ def test_round_trip_and_timecodes(tmp_path):
     assert second.in_ == seconds_to_frames(100, (60000, 1001)) == 5994
     assert second.out == 6144
     assert second.transition_frames == 8
+    assert second.crop_x == 0.5
     path = edl.save(tmp_path / "edl.json")
     raw = json.loads(path.read_text())
     assert raw["shots"][1]["in"] == 5994 and "in_" not in raw["shots"][1]
@@ -64,6 +65,7 @@ def test_round_trip_and_timecodes(tmp_path):
         lambda d: d["shots"][0].update(bogus=1),
         lambda d: d.update(schema=2),
         lambda d: d["shots"][1].update(id="s01"),
+        lambda d: d["shots"][0].update(crop_x=1.2),
     ],
 )
 def test_rejects_bad_edls(mutate):

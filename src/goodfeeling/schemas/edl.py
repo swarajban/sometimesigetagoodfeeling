@@ -71,6 +71,7 @@ class Shot(BaseModel):
     speed: list[tuple[int, float]] = Field(default_factory=lambda: [(0, 1.0)])
     transition: Literal["cut", "crossfade"] = "cut"
     transition_frames: int = 8
+    crop_x: float = Field(default=0.5, ge=0.0, le=1.0)
     score: float | None = None
     tags: list[str] = Field(default_factory=list)
     description: str = ""

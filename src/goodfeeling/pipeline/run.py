@@ -16,25 +16,36 @@ from goodfeeling.ai.pricing import cost_usd, image_tokens, text_tokens
 from goodfeeling.ai.prompts import DIRECT_SYSTEM, DIRECT_TOOL, UNDERSTAND_PROMPT_VERSION, UNDERSTAND_SYSTEM
 from goodfeeling.media.encoders import choose_encoder
 from goodfeeling.media.frames import extract_frame
-from goodfeeling.pipeline.direct import Context, choose_window, direct, eligible, plan_json
+from goodfeeling.pipeline.direct import Context, direct, eligible, extents, plan_json
 from goodfeeling.pipeline.ingest import ingest, load_clips
+from goodfeeling.pipeline.moments import cache_key as moment_key
+from goodfeeling.pipeline.moments import candidate_limit, candidates, estimate_looks, find_moments, moment_segment
 from goodfeeling.pipeline.music import analyze_music, apply_drop_override
+from goodfeeling.pipeline.pacing import parse_pace
 from goodfeeling.pipeline.render import render
 from goodfeeling.pipeline.report import plan_markdown
 from goodfeeling.pipeline.score import Estimate, build_strip, cache_key, estimate_scoring, score_segments
 from goodfeeling.pipeline.segment import blend, segment_project
-from goodfeeling.pipeline.strips import contact_sheet
+from goodfeeling.pipeline.stretch import choose_window
+from goodfeeling.pipeline.strips import centre_weight, contact_sheet, crop_to
 from goodfeeling.pipeline.understand import summarize, summary_markdown
 from goodfeeling.schemas.clip import ClipInfo, FlightInfo
 from goodfeeling.schemas.music import MusicAnalysis
 from goodfeeling.schemas.segment import Segment
 from goodfeeling.settings import Settings
-from goodfeeling.store.project import Project
-from goodfeeling.timebase import Rate, normalize_rate
+from goodfeeling.store.project import DEFAULT_EDIT, Project, check_edit_name
+from goodfeeling.timebase import Rate, normalize_rate, seconds_to_frames
 
 log = logging.getLogger("goodfeeling")
 
 RESOLUTIONS = {"1080": (1920, 1080), "4k": (3840, 2160)}
+FORMATS = ("landscape", "reel")
+DEFAULT_LENGTH = {"landscape": 150.0, "reel": 30.0}
+
+
+def output_size(res: str, edit_format: str) -> tuple[int, int]:
+    width, height = RESOLUTIONS[res]
+    return (height, width) if edit_format == "reel" else (width, height)
 
 
 class CostRefused(RuntimeError):
@@ -45,8 +56,13 @@ class CostRefused(RuntimeError):
 class RunOptions:
     footage: Path
     music: Path | None = None
-    length: float = 150.0
+    length: float | None = None
     style: str = "fast"
+    format: str = "landscape"
+    edit: str | None = None
+    music_start: float | None = None
+    music_end: float | None = None
+    pace: float | None = None
     res: str = "1080"
     project: str | None = None
     data_root: Path | None = None
@@ -117,15 +133,33 @@ def estimate_run(
     estimates = [estimate_scoring(uncached, settings.models.score, settings.score_batch_size)]
     if directing:
         table = len(segments) * 45
-        estimates.append(
-            Estimate(
-                "understand",
-                settings.models.understand,
-                1,
-                text_tokens(UNDERSTAND_SYSTEM) + table + image_tokens(1300, 900) + 400,
-                2500,
+        summary_cached = False
+        infos = {cid: info for cid, (info, _) in clip_map.items()}
+        looks = candidate_limit(infos)
+        if not uncached:
+            score_step(project, settings, segments, clip_map, None, lambda _: None)
+            usable = eligible(segments)
+            summary_cached = (
+                project.read_json(f"analysis/summary-{summary_key(settings, usable, False)}.json") is not None
             )
-        )
+            cands = candidates(usable, extents(segments), infos, looks)
+            looks = sum(
+                1
+                for cand in cands
+                if project.db.cached_moment(moment_key(infos[cand.clip].fingerprint, cand, settings.models.moments))
+                is None
+            )
+        estimates.append(estimate_looks(looks, settings.models.moments))
+        if not summary_cached:
+            estimates.append(
+                Estimate(
+                    "understand",
+                    settings.models.understand,
+                    1,
+                    text_tokens(UNDERSTAND_SYSTEM) + table + image_tokens(1300, 900) + 400,
+                    2500,
+                )
+            )
         direct_in = text_tokens(DIRECT_SYSTEM) + text_tokens(json.dumps(DIRECT_TOOL)) + table + 1200
         estimates.append(Estimate("direct", settings.models.direct, 1, direct_in, 9000))
     return estimates
@@ -198,27 +232,30 @@ def dominant_fps(clips: list[tuple[FlightInfo, ClipInfo, Path]]) -> Rate:
     return weight.most_common(1)[0][0]
 
 
+def summary_key(settings: Settings, segments: list[Segment], offline: bool) -> str:
+    key_src = json.dumps([[s.id, s.start, s.end, s.claude.model_dump() if s.claude else None] for s in segments])
+    raw = f"{key_src}|{settings.models.understand}|{UNDERSTAND_PROMPT_VERSION}|{offline}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
 def understand_step(
     project: Project, settings: Settings, segments: list[Segment], clip_map: dict, claude: Claude | None, progress
-) -> dict:
+) -> tuple[dict, dict[str, Path]]:
     strips = {s.id: build_strip(project, s, clip_map[s.clip][0], clip_map[s.clip][1]) for s in segments}
-    key_src = json.dumps([[s.id, s.start, s.end, s.claude.model_dump() if s.claude else None] for s in segments])
-    key = hashlib.sha256(
-        f"{key_src}|{settings.models.understand}|{UNDERSTAND_PROMPT_VERSION}|{claude is None}".encode()
-    ).hexdigest()[:16]
+    key = summary_key(settings, segments, claude is None)
     cached = project.read_json(f"analysis/summary-{key}.json")
-    clips = {cid: info for cid, (info, _) in clip_map.items()}
     if cached:
         progress("Understand (cached)")
-        return cached
+        return cached, strips
     progress("Understand")
+    clips = {cid: info for cid, (info, _) in clip_map.items()}
     summary, sheet = summarize(
         segments, clips, strips, claude=claude, model=settings.models.understand, effort=settings.effort.understand
     )
     if sheet is not None:
         sheet.save(project.path("frames", "session_sheet.jpg"), quality=85)
     project.write_json(f"analysis/summary-{key}.json", summary)
-    return summary
+    return summary, strips
 
 
 def run(
@@ -229,15 +266,39 @@ def run(
     progress: Callable[[str], None] = print,
     confirm: Callable[[str], bool] | None = None,
 ) -> RunResult:
+    if options.format not in FORMATS:
+        raise ValueError(f"format must be one of {', '.join(FORMATS)}")
+    edit = options.edit or ("reel" if options.format == "reel" else DEFAULT_EDIT)
+    check_edit_name(edit)
+    length = options.length if options.length is not None else DEFAULT_LENGTH[options.format]
     data_root = settings.resolved_data_root(options.data_root)
     project = Project.open(data_root, options.footage, options.project)
     setup_logging(project)
-    progress(f"Project '{project.slug}' in {project.root}")
+    progress(f"Project '{project.slug}' in {project.root}" + (f", edit '{edit}'" if edit != DEFAULT_EDIT else ""))
     clips, segments = analyze(project, settings, progress)
     clip_map = {flight.clip_id: (info, proxy) for flight, info, proxy in clips}
     claude = make_claude(settings, project, transport, options.no_ai)
     result = RunResult(project=project, segments=segments)
     directing = options.music is not None
+    music = None
+    if directing:
+        music = music_step(project, options.music, options.drop_at, progress)
+    out_fps = normalize_rate(options.fps) if options.fps else dominant_fps(clips)
+    window = None
+    if music is not None:
+        if options.music_start is not None and options.music_end is not None and options.length is not None:
+            progress("  note: --music-start and --music-end set the length, so --length is ignored")
+        window, notes = choose_window(
+            music,
+            out_fps,
+            length,
+            start_s=options.music_start,
+            end_s=options.music_end,
+            prefer="peak" if options.format == "reel" else "drop",
+        )
+        for note in notes:
+            progress(f"  note: {note}")
+        length = window.beats * 60 / music.tempo
     if claude is None:
         progress("Claude: off (no ANTHROPIC_API_KEY or --no-ai); scores come from local signals only")
     else:
@@ -257,19 +318,43 @@ def run(
         result.cost = claude.meter.cost if claude else 0.0
         return result
 
-    music = music_step(project, options.music, options.drop_at, progress)
     usable = eligible(segments)
-    summary = understand_step(project, settings, usable, clip_map, claude, progress)
+    summary, strips = understand_step(project, settings, usable, clip_map, claude, progress)
     result.outputs["summary"] = project.write_json("analysis/summary.json", summary)
     summary_md = project.path("edits", "summary.md")
     summary_md.write_text(summary_markdown(summary))
     result.outputs["summary_md"] = summary_md
 
-    out_fps = normalize_rate(options.fps) if options.fps else dominant_fps(clips)
-    width, height = RESOLUTIONS[options.res]
-    window = choose_window(music, out_fps, options.length)
+    progress("Moments")
+    extent = extents(segments)
+    moments, moment_stats = find_moments(
+        project,
+        usable,
+        extent,
+        clip_map,
+        claude=claude,
+        model=settings.models.moments,
+        effort=settings.effort.moments,
+        progress=progress,
+    )
+    progress(f"  {len(moments)} moments ({moment_stats})")
+    by_id = {s.id: s for s in segments}
+    pickable = {s.id: s for s in usable}
+    for moment in moments:
+        seg = moment_segment(moment, by_id)
+        pickable[seg.id] = seg
+        lo, hi = extent.get(moment.segment_ids[0], (moment.start, moment.end))
+        pad = seconds_to_frames(0.5, clip_map[moment.clip][0].fps)
+        extent[seg.id] = (max(lo, moment.start - pad), min(hi, moment.end + pad))
+
+    width, height = output_size(options.res, options.format)
+    centre = {sid: centre_weight(path) for sid, path in strips.items()} if options.format == "reel" else {}
+    for moment in moments:
+        parts = [centre[s] for s in moment.segment_ids if s in centre]
+        if parts:
+            centre[moment.id] = sum(parts) / len(parts)
     ctx = Context(
-        segments={s.id: s for s in usable},
+        segments=pickable,
         clips={k: v[0] for k, v in clip_map.items()},
         flights={f.clip_id: f for f, _, _ in clips},
         music=music,
@@ -278,29 +363,43 @@ def run(
         width=width,
         height=height,
         style=options.style,
-        target_s=options.length,
+        target_s=length,
         style_note=settings.style_note,
         summary=summary_markdown(summary),
         lut=settings.lut,
+        format=options.format,
+        centre=centre,
+        pace=options.pace if options.pace is not None else parse_pace(settings.pace),
+        extent=extent,
+        moments={m.id: m for m in moments},
     )
-    progress(f"Direct ({window.beats} beats from track beat {window.start_beat}, {out_fps[0]}/{out_fps[1]} fps)")
+    progress(
+        f"Direct ({options.format}, pace {ctx.pace:g}, floor {ctx.rules.floor_s:.1f} s, "
+        f"filler up to {ctx.rules.filler_s:.1f} s, "
+        f"{window.beats} beats from {music.beats[window.start_beat]:.2f} s of the track, "
+        f"{out_fps[0]}/{out_fps[1]} fps)"
+    )
     directed = direct(
         ctx, claude=claude, model=settings.models.direct, effort=settings.effort.direct, progress=progress
     )
-    result.outputs["edl"] = project.save_edl(directed.edl, origin=directed.plan.source)
-    result.outputs["plan_json"] = project.path("edits", "plan.json")
+    result.outputs["edl"] = project.save_edl(
+        directed.edl, origin=directed.plan.source, edit=edit, edit_format=options.format
+    )
+    result.outputs["plan_json"] = project.edit_path(edit, "edits", "plan.json")
     result.outputs["plan_json"].write_text(plan_json(directed))
-    plan_md = project.path("edits", "plan.md")
+    plan_md = project.edit_path(edit, "edits", "plan.md")
     plan_md.write_text(plan_markdown(directed, ctx, claude.meter if claude else None))
     result.outputs["plan_md"] = plan_md
-    result.outputs["contact_sheet"] = write_shot_sheet(project, directed.edl, clip_map)
+    result.outputs["contact_sheet"] = write_shot_sheet(
+        project, directed.edl, clip_map, project.edit_path(edit, "renders", "contact_sheet.jpg")
+    )
 
     if options.render:
         progress("Render")
-        encoder = choose_encoder(settings.render, height)
+        encoder = choose_encoder(settings.render, max(width, height))
         final = render(
             directed.edl,
-            project.path("renders", "final.mp4"),
+            project.edit_path(edit, "renders", "final.mp4"),
             encoder,
             project.shot_cache,
             audio_bitrate=settings.render.audio_bitrate,
@@ -313,20 +412,23 @@ def run(
     return result
 
 
-def write_shot_sheet(project: Project, edl, clip_map: dict) -> Path:
+def write_shot_sheet(project: Project, edl, clip_map: dict, path: Path) -> Path:
+    """Middle frame of every shot, framed the way the output crops it."""
     by_fp = {info.fingerprint: (info, proxy) for info, proxy in clip_map.values()}
+    portrait = edl.output.height > edl.output.width
     items = []
     for entry in edl.timeline():
         shot = entry.shot
         info, proxy = by_fp[edl.sources[shot.clip].fingerprint]
-        mid = (shot.in_ + shot.out) // 2
-        items.append(
-            (
-                f"{entry.index + 1}. {shot.id} {shot.clip} {shot.score or 0:.1f}",
-                extract_frame(proxy, mid, info.fps, 320),
-            )
+        frame = extract_frame(proxy, (shot.in_ + shot.out) // 2, info.fps, 640 if portrait else 320)
+        caption = (
+            f"{entry.index + 1}. {shot.id} {shot.score or 0:.1f}"
+            if portrait
+            else (f"{entry.index + 1}. {shot.id} {shot.clip} {shot.score or 0:.1f}")
         )
-    columns = min(6, max(1, math.ceil(math.sqrt(len(items)))))
-    path = project.path("renders", "contact_sheet.jpg")
-    contact_sheet(items, columns=columns, thumb_w=240).save(path, quality=85)
+        items.append((caption, crop_to(frame, edl.output.width, edl.output.height, shot.crop_x)))
+    columns = min(8 if portrait else 6, max(1, math.ceil(math.sqrt(len(items) * (2 if portrait else 1)))))
+    thumb = 150 if portrait else 240
+    path.parent.mkdir(parents=True, exist_ok=True)
+    contact_sheet(items, columns=columns, thumb_w=thumb).save(path, quality=85)
     return path

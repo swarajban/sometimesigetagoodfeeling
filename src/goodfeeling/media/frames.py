@@ -13,7 +13,7 @@ from goodfeeling.media.ffmpeg import FFmpegError, ffmpeg_bin, run_ffmpeg
 from goodfeeling.timebase import Rate, seek_seconds
 
 
-def iter_samples(path: str | Path, sample_fps: float, height: int) -> Iterator[tuple[int, np.ndarray]]:
+def iter_samples(path: str | Path, sample_fps: float | str, height: int) -> Iterator[tuple[int, np.ndarray]]:
     """Yield (sample_index, RGB frame) at a fixed sample rate, scaled to `height`."""
     probe_w = _scaled_width(path, height)
     cmd = [
@@ -92,6 +92,8 @@ def read_frames(path: str | Path, start: int, count: int, fps: Rate, width: int,
             str(path),
             "-frames:v",
             str(count),
+            "-fps_mode",
+            "passthrough",
             "-an",
             "-vf",
             f"scale={width}:{height}:flags=area",
