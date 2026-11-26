@@ -6,6 +6,7 @@ import contextlib
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -65,6 +66,11 @@ def serve(port: int, data_root: str | None, open_browser: bool, dev: bool, dev_p
     from goodfeeling.server.app import create_app
     from goodfeeling.settings import load_settings
 
+    with socket.socket() as probe:
+        try:
+            probe.bind((HOST, port))
+        except OSError:
+            raise SystemExit(f"Port {port} is already in use by another program; try --port {port + 1}") from None
     root = load_settings().resolved_data_root(data_root)
     app = create_app(root)
     env = {**os.environ, "GOODFEELING_DATA_ROOT": str(root), "PYTHONUNBUFFERED": "1"}
