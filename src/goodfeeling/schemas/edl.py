@@ -170,6 +170,7 @@ def write_atomic(path: Path, text: str) -> Path:
     try:
         with os.fdopen(fd, "w") as handle:
             handle.write(text)
+        os.chmod(tmp, 0o644)
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)

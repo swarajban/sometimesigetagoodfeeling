@@ -36,7 +36,8 @@ def anthropic_transport(api_key: str) -> Transport:
     client = anthropic.Anthropic(api_key=api_key, max_retries=4)
 
     def send(request: dict[str, Any]) -> dict[str, Any]:
-        message = client.messages.create(**request)
+        with client.messages.stream(**request) as stream:
+            message = stream.get_final_message()
         return message.model_dump(mode="json", exclude_none=True)
 
     return send
