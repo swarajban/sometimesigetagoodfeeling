@@ -34,7 +34,7 @@ uv run goodfeeling doctor [clip.MP4]
 analyses the music, writes a session summary, directs the edit, validates it, and renders `final.mp4`.
 Before the first Claude call it prints a cost estimate and, in a terminal, asks before spending
 (`--yes` skips the question; `--max-cost` refuses to start above a limit). Useful options: `--style
-cinematic`, `--res 4k`, `--drop-at 64.5` (seconds into the track), `--project NAME`, `--no-ai` (local signals
+cinematic`, `--res 4k`, `--pace slower`, `--drop-at 64.5` (seconds into the track), `--project NAME`, `--no-ai` (local signals
 and the deterministic director, no API calls), `--model-score`, `--model-direct`.
 
 ### Choosing the stretch of the song
@@ -59,6 +59,25 @@ director call is new.
 
 Each shot in the EDL has an optional `crop_x` (0 = keep the left edge, 0.5 = centre, the default, 1 = the right
 edge). Set it by hand for a shot whose subject is off-centre, then re-render with `render --from-edl`.
+
+### Pacing
+
+Pacing is a target shot length in seconds, converted to beats at the track's tempo, so a 90 BPM and a 170 BPM track
+cut at a similar rate:
+
+| | average shot | most shots | floor |
+|---|---:|---:|---:|
+| `fast` landscape | about 3 s | 2-5 s | 1.5 s |
+| `cinematic` landscape | about 5.5 s | 3.5-8 s | 1.5 s |
+| reel (`fast`) | about 2.5 s | 1.5-4 s | 1.2 s |
+
+Quiet sections hold longer and loud ones a little shorter. The validator rejects shots under the floor, except a
+burst of 2-4 quick cuts used as an accent (at most one per 30 s), so sustained quick cutting isn't possible at
+normal pace. A hold longer than its segment runs on into the clean footage around it in the same clip (never into a
+dropped span or a crash, and never into footage another shot uses).
+
+`--pace slower|normal|faster` or a multiplier (`--pace 1.2` cuts 20% more often; `0.75` is `slower`) scales all of
+this; `"pace"` in the settings file sets the default.
 
 ### Named edits
 
@@ -104,6 +123,7 @@ Optional JSON at `~/Library/Application Support/Good Feeling/settings.json` on m
   "effort": { "score": "low", "understand": "medium", "direct": "medium" },
   "weights": { "claude": 0.7, "motion": 0.15, "sharpness": 0.1, "exposure": 0.05 },
   "style_note": "I like low proximity passes over water; skip high cruising.",
+  "pace": "normal",
   "lut": "/path/to/DJI D-Log M to Rec.709.cube",
   "max_cost_usd": 5.0,
   "render": { "encoder": "auto", "bitrate_1080": "24M", "bitrate_4k": "80M", "videotoolbox_quality": null }

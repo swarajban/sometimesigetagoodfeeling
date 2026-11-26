@@ -109,11 +109,19 @@ class Context:
         return floor_beats(self.pacing, self.seconds_per_beat)
 
     def section_seconds(self, section: MusicSection | None) -> float:
-        """Target shot length for a section, from its energy relative to the rest of the stretch."""
-        energies = [s.energy for _, _, s in self.in_window()] or [0.5]
+        """Target shot length for a section: shaped by its energy relative to the rest of the stretch, then scaled
+        so the whole edit averages the pacing target."""
+        inside = self.in_window()
+        energies = [s.energy for _, _, s in inside] or [0.5]
         low, high = min(energies), max(energies)
-        energy = 0.5 if section is None or high - low < 1e-6 else (section.energy - low) / (high - low)
-        return self.pacing.for_energy(energy)
+
+        def relative(s: MusicSection | None) -> float:
+            return 0.5 if s is None or high - low < 1e-6 else (s.energy - low) / (high - low)
+
+        pacing = self.pacing
+        weights = [(b - a, pacing.for_energy(relative(s))) for a, b, s in inside]
+        mean = sum(w * v for w, v in weights) / (sum(w for w, _ in weights) or 1) if weights else pacing.target_s
+        return min(pacing.max_s, max(pacing.min_s, pacing.for_energy(relative(section)) * pacing.target_s / mean))
 
     def beats_per_cut(self, edit_beat: int) -> int:
         section = self.music.section_at(self.window.start_beat + edit_beat)
