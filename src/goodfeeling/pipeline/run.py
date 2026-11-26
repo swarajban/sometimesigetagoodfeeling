@@ -213,7 +213,7 @@ def score_step(
         batch_size=settings.score_batch_size,
         progress=progress,
     )
-    blend(segments, settings.weights)
+    blend(segments, settings.weights, settings.props_penalty)
     project.write_json("analysis/segments.json", [s.model_dump() for s in segments])
     return stats
 

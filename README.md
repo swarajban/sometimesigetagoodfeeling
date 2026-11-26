@@ -178,11 +178,15 @@ Optional JSON at `~/Library/Application Support/Good Feeling/settings.json` on m
   "weights": { "claude": 0.7, "motion": 0.15, "sharpness": 0.1, "exposure": 0.05 },
   "style_note": "I like low proximity passes over water; skip high cruising.",
   "pace": "normal",
+  "props_penalty": 0.0,
   "lut": "/path/to/DJI D-Log M to Rec.709.cube",
   "max_cost_usd": 5.0,
   "render": { "encoder": "auto", "bitrate_1080": "24M", "bitrate_4k": "80M", "videotoolbox_quality": null }
 }
 ```
+
+`props_penalty` is taken off a segment's blended score when Claude sees propellers in view. It is 0 by default, so
+prop tips at the frame edge cost nothing; the flag still shows in Review and in what the director reads.
 
 Prices for the cost estimate and meter live in one table, `src/goodfeeling/ai/pricing.py`.
 

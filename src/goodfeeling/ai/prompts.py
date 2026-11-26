@@ -117,7 +117,7 @@ UNDERSTAND_TOOL = {
     },
 }
 
-DIRECT_PROMPT_VERSION = "direct-v3"
+DIRECT_PROMPT_VERSION = "direct-v4"
 
 DIRECT_SYSTEM = """You are the director of a beat-synced FPV highlight edit. You receive the scored segments \
 of one session, the music's beat grid and sections, the target length, a style, and notes from the pilot. \
@@ -148,8 +148,8 @@ natural span from approach to exit; when it's worth it, play it in full (full_be
 even 8-12 s. Trim a little if needed, but never pad a hold past the move with dead air. Ordinary segments are short \
 connecting shots or are left out. Fewer, longer cuts should come from the best moments taking more of the runtime, \
 not from stretching everything. Each reason must say why the shot gets the length it does.
-- Avoid segments flagged crash, blur or props unless the moment is worth it, and avoid back-to-back shots that \
-look alike.
+- Avoid segments flagged crash or blur unless the moment is worth it, and avoid back-to-back shots that look \
+alike. The props flag (propeller tips at the frame edge) is information only; the pilot doesn't mind them.
 - Every shot needs a short reason tied to what the viewer sees and where it sits in the music.
 
 Answer by calling submit_edit_plan."""
