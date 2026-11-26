@@ -248,10 +248,13 @@ def render(
     def work(item: tuple[Piece, Path]) -> Path:
         return render_piece(edl, item[0], encoder, item[1])
 
-    with ThreadPoolExecutor(max_workers=parallel) as pool:
+    pool = ThreadPoolExecutor(max_workers=parallel)
+    try:
         for done, _ in enumerate(pool.map(work, zip(pieces, paths, strict=True)), start=1):
             if done % 5 == 0 or done == len(pieces):
                 progress(f"  encoded {done}/{len(pieces)}")
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     listing = cache_dir / f"concat-{os.getpid()}.txt"
     listing.write_text("".join("file '" + p.as_posix().replace("'", "'\\''") + "'\n" for p in paths))

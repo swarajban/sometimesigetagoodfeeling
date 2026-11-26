@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 import math
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -155,17 +155,48 @@ def score_segments(
         )
         return _parse(call.input, {seg.id for seg in batch}, model)
 
+    by_id = {seg.id: seg for seg in todo}
     results: dict[str, Score] = {}
-    with ThreadPoolExecutor(max_workers=parallel) as pool:
-        for i, scores in enumerate(pool.map(request, batches)):
-            results.update(scores)
-            progress(f"  scored batch {i + 1}/{len(batches)}")
+
+    def keep(scores: dict[str, Score]) -> None:
+        """Cache each batch as it lands, so a stopped or crashed run keeps what it already paid for."""
+        for sid, score in scores.items():
+            seg = by_id.get(sid)
+            if seg is None or sid in results:
+                continue
+            results[sid] = score
+            clip = clips[seg.clip][0]
+            project.db.store_score(
+                cache_key(clip.fingerprint, seg, model),
+                fingerprint=clip.fingerprint,
+                in_frame=seg.start,
+                out_frame=seg.end,
+                frame_params=FRAME_PARAMS,
+                model=model,
+                prompt_version=SCORE_PROMPT_VERSION,
+                result=score.model_dump(),
+            )
+
+    def landed(future: Future) -> None:
+        if not future.cancelled() and future.exception() is None:
+            keep(future.result())
+
+    pool = ThreadPoolExecutor(max_workers=parallel)
+    try:
+        futures = [pool.submit(request, batch) for batch in batches]
+        for future in futures:
+            future.add_done_callback(landed)
+        for i, future in enumerate(as_completed(futures), start=1):
+            future.result()
+            progress(f"  scored batch {i}/{len(batches)}")
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     stats["requests"] = len(batches)
     missing = [seg for seg in todo if seg.id not in results]
     if missing:
         log.warning("re-asking for %d segments Claude skipped", len(missing))
         for batch in [missing[i : i + batch_size] for i in range(0, len(missing), batch_size)]:
-            results.update(request(batch))
+            keep(request(batch))
             stats["requests"] += 1
     for seg in todo:
         score = results.get(seg.id)
@@ -173,16 +204,5 @@ def score_segments(
             stats["unscored"] += 1
             continue
         seg.claude = score
-        clip = clips[seg.clip][0]
-        project.db.store_score(
-            cache_key(clip.fingerprint, seg, model),
-            fingerprint=clip.fingerprint,
-            in_frame=seg.start,
-            out_frame=seg.end,
-            frame_params=FRAME_PARAMS,
-            model=model,
-            prompt_version=SCORE_PROMPT_VERSION,
-            result=score.model_dump(),
-        )
         stats["scored"] += 1
     return stats

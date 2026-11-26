@@ -58,6 +58,7 @@ class NeedsApproval(Exception):
 class State:
     job_id: int | None = None
     stop_reason: str | None = None
+    stop_job: int | None = None
     shutting_down: bool = False
 
 
@@ -119,6 +120,10 @@ def run_job(db: Database, job: dict, owner: str) -> None:
         options = RunOptions.from_json(params["options"])
         result = run(options, settings, progress=progress, estimate_hook=gate)
     except NeedsApproval as exc:
+        if queue.cancel_requested(db, job_id):
+            queue.add_event(db, job_id, "Cancelled")
+            queue.finish(db, job_id, owner, "cancelled", error="cancelled")
+            return
         queue.add_event(db, job_id, f"Waiting for approval: about ${exc.estimate['expected']:.2f}")
         queue.finish(db, job_id, owner, "approval", estimate=exc.estimate)
         return
@@ -152,11 +157,15 @@ def heartbeat(db: Database, state: State, owner: str, parent: int | None) -> Non
         job_id = state.job_id
         if job_id is None or state.stop_reason:
             continue
+        reason = None
         if not queue.renew(db, job_id, owner):
-            state.stop_reason = "lost"
+            job = queue.get(db, job_id)
+            if job and job["status"] == "running" and job["lease_owner"] not in (None, owner):
+                reason = "lost"
         elif queue.cancel_requested(db, job_id):
-            state.stop_reason = "cancel"
-        if state.stop_reason:
+            reason = "cancel"
+        if reason and state.job_id == job_id:
+            state.stop_reason, state.stop_job = reason, job_id
             os.kill(os.getpid(), signal.SIGUSR1)
 
 
@@ -175,7 +184,7 @@ def main(argv: list[str] | None = None) -> None:
         if signum == signal.SIGTERM:
             state.shutting_down = True
             state.stop_reason = "shutdown"
-        if state.job_id is not None:
+        if state.job_id is not None and (signum == signal.SIGTERM or state.stop_job == state.job_id):
             raise Interrupted(state.stop_reason or "shutdown")
         if state.shutting_down:
             raise SystemExit(0)
@@ -193,7 +202,7 @@ def main(argv: list[str] | None = None) -> None:
             except Interrupted:
                 break
             continue
-        state.job_id, state.stop_reason = job["id"], None
+        state.job_id, state.stop_reason, state.stop_job = job["id"], None, None
         try:
             run_job(db, job, owner)
         except Interrupted as exc:

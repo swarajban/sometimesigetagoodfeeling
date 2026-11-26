@@ -62,8 +62,10 @@ def test_review_choices_persist_and_reach_the_director(media, root, config):
     assert spare, "fixture needs an unused segment to star"
     excluded, starred = used[0], spare[0].id
 
-    client = TestClient(create_app(root))
+    client = TestClient(create_app(root), base_url="http://127.0.0.1", headers={"X-Goodfeeling": "1"})
     url = "/api/projects/footage/segments"
+    assert client.put(f"{url}/{excluded}/choice", json={}, headers={"X-Goodfeeling": ""}).status_code == 403
+    assert client.get("/api/projects", headers={"Host": "evil.example"}).status_code == 400
     assert client.put(f"{url}/{excluded}/choice", json={"include": False}).json()["include"] is False
     assert client.put(f"{url}/{starred}/choice", json={"star": True}).json()["star"] is True
     assert client.put(f"{url}/{used[-1]}/choice", json={"taste": -1}).json()["taste"] == -1
@@ -122,7 +124,7 @@ def test_job_of_a_dead_worker_resumes_on_restart(media, root, config):
 
 def test_api_key_is_never_returned_in_full(tmp_path, config):
     config.write_text("{}")
-    client = TestClient(create_app(tmp_path / "data"))
+    client = TestClient(create_app(tmp_path / "data"), base_url="http://127.0.0.1", headers={"X-Goodfeeling": "1"})
     key = "sk-ant-test-0123456789abcdef"
     response = client.put("/api/settings", json={"api_key": key, "pace": "slower"})
     assert response.status_code == 200

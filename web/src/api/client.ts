@@ -1,7 +1,7 @@
 import createClient from 'openapi-fetch'
 import type { components, paths } from './schema'
 
-export const api = createClient<paths>({ baseUrl: '' })
+export const api = createClient<paths>({ baseUrl: '', headers: { 'X-Goodfeeling': '1' } })
 
 type S = components['schemas']
 export type Job = S['Job']

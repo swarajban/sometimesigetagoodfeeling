@@ -105,12 +105,11 @@ export function useJobStream(initial: Job | null | undefined) {
   const [job, setJob] = useState<Job | null>(initial ?? null)
   const [lines, setLines] = useState<JobEvent[]>([])
   const id = initial?.id
-  const last = useRef<string | null>(null)
+  const last = useRef<string | null>(initial?.status ?? null)
 
   useEffect(() => {
     if (id === undefined) return
     setLines([])
-    last.current = null
     const source = new EventSource(`/api/jobs/${id}/events`)
     source.addEventListener('log', (e) => {
       const event = JSON.parse((e as MessageEvent).data) as JobEvent

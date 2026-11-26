@@ -212,16 +212,27 @@ def fps_float(fps: Rate) -> float:
 
 
 def usable_stars(ctx: Context) -> set[str]:
-    """Starred segments that can hold a shot at the pacing floor, so a plan can be required to use them."""
-    result = set()
-    for sid in ctx.must_use:
-        seg = ctx.segments.get(sid)
-        if seg is None:
-            continue
+    """Starred segments a plan can be required to use: each can hold a shot at the pacing floor, no two share
+    footage or show the same moment, and together they fit in the edit. Strongest first when they don't all fit."""
+    floor = ctx.floor_beats
+    kept: list[Segment] = []
+    starred = [ctx.segments[sid] for sid in ctx.must_use if sid in ctx.segments]
+    for seg in sorted(starred, key=lambda s: (-ctx.rank(s), ctx.chrono_key(s))):
         lo, hi = ctx.bounds(seg)
-        if _seconds(ctx, seg, hi - lo) >= _need_seconds(ctx, ctx.floor_beats):
-            result.add(sid)
-    return result
+        if _seconds(ctx, seg, hi - lo) < _need_seconds(ctx, floor) or (len(kept) + 1) * floor > ctx.window.beats:
+            continue
+        if any(_same_run(ctx, seg, other) or _near_duplicate(ctx, seg, other) for other in kept):
+            continue
+        kept.append(seg)
+    return {seg.id for seg in kept}
+
+
+def _near_duplicate(ctx: Context, a: Segment, b: Segment) -> bool:
+    return (
+        a.clip == b.clip
+        and hamming(a.phash, b.phash) <= DUPLICATE_HAMMING
+        and max(a.start, b.start) - min(a.end, b.end) <= DUPLICATE_GAP_S * fps_float(ctx.clips[a.clip].fps)
+    )
 
 
 def must_use_problems(ctx: Context, plan: EditPlan) -> list[Violation]:
@@ -680,6 +691,12 @@ def director_prompt(ctx: Context, segments_table: str) -> str:
     if stars:
         lines.append(
             f"Pilot's must-use segments (starred in review; every one must be in the plan): {', '.join(stars)}"
+        )
+    optional = sorted(sid for sid in ctx.must_use - set(stars) if sid in ctx.segments)
+    if optional:
+        lines.append(
+            "Also starred, but not required because they are too short, share footage with another star, or don't "
+            f"all fit: {', '.join(optional)}. Use them if they fit."
         )
     if ctx.disliked:
         lines.append(

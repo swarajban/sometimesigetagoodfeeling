@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from goodfeeling import DISPLAY_NAME
@@ -300,6 +301,15 @@ def create_app(data_root: Path | None = None) -> FastAPI:
     app = FastAPI(title=DISPLAY_NAME, version="0.2.0")
     app.state.store = store
     app.state.stopping = False
+    extra_hosts = [h.strip() for h in os.environ.get("GOODFEELING_ALLOWED_HOSTS", "").split(",") if h.strip()]
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", *extra_hosts])
+
+    @app.middleware("http")
+    async def require_app_header(request: Request, call_next):
+        """Other web pages can send simple cross-site POSTs to localhost; only this app sends the header."""
+        if request.method not in ("GET", "HEAD", "OPTIONS") and request.headers.get("x-goodfeeling") != "1":
+            return JSONResponse({"detail": "requests that change things need the X-Goodfeeling header"}, 403)
+        return await call_next(request)
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
@@ -776,6 +786,9 @@ def create_app(data_root: Path | None = None) -> FastAPI:
                     seen = job["updated_at"]
                     yield f"event: job\ndata: {job_out(store, job).model_dump_json()}\n\n"
                 if job["status"] in queue.FINISHED:
+                    for event in queue.events_after(store.db, job_id, last):
+                        last = event["id"]
+                        yield f"id: {last}\nevent: log\ndata: {json.dumps(event)}\n\n"
                     break
                 idle += 0.4
                 if idle >= 15:
