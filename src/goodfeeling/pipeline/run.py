@@ -16,7 +16,7 @@ from goodfeeling.ai.pricing import cost_usd, image_tokens, text_tokens
 from goodfeeling.ai.prompts import DIRECT_SYSTEM, DIRECT_TOOL, UNDERSTAND_PROMPT_VERSION, UNDERSTAND_SYSTEM
 from goodfeeling.media.encoders import choose_encoder
 from goodfeeling.media.frames import extract_frame
-from goodfeeling.pipeline.direct import Context, direct, eligible, extents, plan_json
+from goodfeeling.pipeline.direct import Context, direct, eligible, extents, make_title, plan_json
 from goodfeeling.pipeline.ingest import ingest, load_clips
 from goodfeeling.pipeline.moments import cache_key as moment_key
 from goodfeeling.pipeline.moments import candidate_limit, candidates, estimate_looks, find_moments, moment_segment
@@ -70,6 +70,7 @@ class RunOptions:
     no_ai: bool = False
     fps: str | None = None
     render: bool = True
+    title: list[str] | None = None
 
     def to_json(self) -> dict:
         return {k: str(v) if isinstance(v, Path) else v for k, v in asdict(self).items()}
@@ -420,6 +421,7 @@ def run(
         moments={m.id: m for m in moments if m.id in pickable},
         must_use=starred & set(pickable),
         disliked=disliked,
+        title=make_title(options.title, music, window) if options.title else None,
     )
     progress(
         f"Direct ({options.format}, pace {ctx.pace:g}, floor {ctx.rules.floor_s:.1f} s, "

@@ -83,6 +83,35 @@ class Shot(BaseModel):
         return float(self.speed[0][1]) if self.speed else 1.0
 
 
+class Title(BaseModel):
+    """Text drawn over the opening footage: the first line large, the rest smaller beneath it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lines: list[str] = Field(min_length=1, max_length=4)
+    start_frame: int = Field(default=0, ge=0)
+    fade_in_frames: int = Field(default=30, ge=0)
+    hold_frames: int = Field(default=240, ge=1)
+    fade_out_frames: int = Field(default=30, ge=0)
+    style: Literal["film"] = "film"
+
+    @field_validator("lines")
+    @classmethod
+    def _lines(cls, value: list[str]) -> list[str]:
+        lines = [line.strip() for line in value]
+        if not all(lines):
+            raise ValueError("title lines must not be empty")
+        return lines
+
+    @property
+    def frames(self) -> int:
+        return self.fade_in_frames + self.hold_frames + self.fade_out_frames
+
+    @property
+    def end_frame(self) -> int:
+        return self.start_frame + self.frames
+
+
 class TimelineEntry(BaseModel):
     shot: Shot
     index: int
@@ -102,6 +131,7 @@ class EDL(BaseModel):
     music: MusicRef
     sources: dict[str, Source]
     shots: list[Shot]
+    title: Title | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -155,7 +185,8 @@ class EDL(BaseModel):
         return sum(entry.length for entry in self.timeline())
 
     def to_json(self) -> str:
-        return json.dumps(self.model_dump(mode="json", by_alias=True), indent=2) + "\n"
+        data = self.model_dump(mode="json", by_alias=True, exclude={"title"} if self.title is None else None)
+        return json.dumps(data, indent=2) + "\n"
 
     @classmethod
     def load(cls, path: str | Path) -> EDL:

@@ -676,6 +676,8 @@ export interface components {
             music_start?: string | null;
             /** Edit */
             edit?: string | null;
+            /** Title */
+            title?: string[] | null;
             /** Footage */
             footage: string;
             /** Music */

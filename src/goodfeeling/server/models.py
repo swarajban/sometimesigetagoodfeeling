@@ -60,6 +60,7 @@ class RunOptionsIn(BaseModel):
     pace: str | None = None
     music_start: str | None = None
     edit: str | None = None
+    title: list[str] | None = Field(default=None, max_length=4)
 
 
 class ImportRequest(RunOptionsIn):
