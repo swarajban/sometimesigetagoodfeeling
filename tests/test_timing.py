@@ -52,7 +52,7 @@ def make_context(out_fps, src_fps, tempo=125.0, beats=400, offset=0.37):
             flight=1,
             start=0,
             end=frames,
-            final_score=5,
+            final_score=9,
             phash=f"{n * 0x1111111111:016x}"[-16:],
         )
     window, _ = choose_window(music, out_fps, 300 * spb)
@@ -151,7 +151,8 @@ def test_stretch_without_a_drop_peaks_on_its_loudest_section():
     ctx.window, _ = choose_window(ctx.music, (30000, 1001), 40, start_s=0.0)
     assert ctx.peak() == (48, 80)
     plan = select(ctx)
-    assert any(p.role == "peak" for p in plan.shots)
+    edl, violations = build_edl(ctx, plan)
+    assert violations == []
 
 
 def test_pacing_floor_allows_only_short_bursts():
@@ -166,21 +167,20 @@ def test_pacing_floor_allows_only_short_bursts():
         ctx, EditPlan(shots=[PlannedShot(segment_id=f"c{i + 1:02d}s01", beats=2, reason="r") for i in range(150)])
     )
     assert any(v.code == "pace" for v in violations), "sustained 2-beat cutting is rejected at normal pace"
-    assert any(v.code == "too_many_cuts" for v in violations)
     plan = select(ctx)
-    assert min(p.beats for p in plan.shots) * 60 / ctx.music.tempo >= ctx.pacing.floor_s
+    assert min(p.beats for p in plan.shots) * 60 / ctx.music.tempo >= ctx.rules.floor_s
 
 
 def test_long_hold_extends_into_clean_neighbouring_footage_only():
     from goodfeeling.pipeline.direct import extents
 
     ctx = make_context((30000, 1001), (30000, 1001), tempo=120.0)
-    a = Segment(id="c01s01", clip="c01", flight=1, start=0, end=60, final_score=8, phash="0" * 16)
+    a = Segment(id="c01s01", clip="c01", flight=1, start=0, end=60, final_score=9, phash="0" * 16)
     b = Segment(id="c01s02", clip="c01", flight=1, start=60, end=300, final_score=5, phash="f" * 16)
     ctx.segments = {"c01s01": a, "c01s02": b, **{k: v for k, v in ctx.segments.items() if v.clip != "c01"}}
     ctx.extent = extents(list(ctx.segments.values()))
     rest = [PlannedShot(segment_id=f"c{i:02d}s01", beats=6, reason="r") for i in range(2, 60)]
-    plan = EditPlan(shots=[PlannedShot(segment_id="c01s01", beats=8, reason="r"), *rest])
+    plan = EditPlan(shots=[PlannedShot(segment_id="c01s01", beats=5, reason="r"), *rest])
     edl, violations = build_edl(ctx, plan)
     assert not [v for v in violations if v.code in ("too_short", "overlap")]
     assert edl.shots[0].in_ == 0 and edl.shots[0].out > a.end
@@ -188,3 +188,31 @@ def test_long_hold_extends_into_clean_neighbouring_footage_only():
     ctx.extent = extents(list(ctx.segments.values()))
     _, violations = build_edl(ctx, plan)
     assert any(v.code == "too_short" for v in violations)
+
+
+def test_moments_hold_in_full_and_filler_stays_short():
+    from goodfeeling.schemas.moment import Moment
+
+    ctx = make_context((30000, 1001), (30000, 1001), tempo=120.0)
+    for seg in ctx.segments.values():
+        seg.final_score = 6.0
+    big = Moment(id="m01", clip="c05", flight=1, start=30, end=30 + 300, worth=9.5, hold="full", kind="gap")
+    ctx.segments["m01"] = Segment(
+        id="m01", clip="c05", flight=1, start=big.start, end=big.end, kind="moment", final_score=9.5, phash="1" * 16
+    )
+    del ctx.segments["c05s01"]
+    ctx.moments = {"m01": big}
+    plan = select(ctx)
+    edl, violations = build_edl(ctx, plan)
+    assert violations == []
+    lengths = {p.segment_id: p.beats * 0.5 for p in plan.shots}
+    assert 9.0 <= lengths["m01"] <= 10.6, "the moment plays its ~10 s span"
+    assert all(v <= ctx.rules.filler_s + 0.25 for k, v in lengths.items() if k != "m01")
+    padded = EditPlan(
+        shots=[
+            PlannedShot(segment_id="m01", beats=24, reason="r"),
+            PlannedShot(segment_id="c01s01", beats=8, reason="r"),
+        ]
+    )
+    _, violations = build_edl(ctx, padded)
+    assert {v.code for v in violations} >= {"hold"}

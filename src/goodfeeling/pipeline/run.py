@@ -18,6 +18,8 @@ from goodfeeling.media.encoders import choose_encoder
 from goodfeeling.media.frames import extract_frame
 from goodfeeling.pipeline.direct import Context, direct, eligible, extents, plan_json
 from goodfeeling.pipeline.ingest import ingest, load_clips
+from goodfeeling.pipeline.moments import cache_key as moment_key
+from goodfeeling.pipeline.moments import candidate_limit, candidates, estimate_looks, find_moments, moment_segment
 from goodfeeling.pipeline.music import analyze_music, apply_drop_override
 from goodfeeling.pipeline.pacing import parse_pace
 from goodfeeling.pipeline.render import render
@@ -32,7 +34,7 @@ from goodfeeling.schemas.music import MusicAnalysis
 from goodfeeling.schemas.segment import Segment
 from goodfeeling.settings import Settings
 from goodfeeling.store.project import DEFAULT_EDIT, Project, check_edit_name
-from goodfeeling.timebase import Rate, normalize_rate
+from goodfeeling.timebase import Rate, normalize_rate, seconds_to_frames
 
 log = logging.getLogger("goodfeeling")
 
@@ -132,12 +134,22 @@ def estimate_run(
     if directing:
         table = len(segments) * 45
         summary_cached = False
+        infos = {cid: info for cid, (info, _) in clip_map.items()}
+        looks = candidate_limit(infos)
         if not uncached:
             score_step(project, settings, segments, clip_map, None, lambda _: None)
             usable = eligible(segments)
             summary_cached = (
                 project.read_json(f"analysis/summary-{summary_key(settings, usable, False)}.json") is not None
             )
+            cands = candidates(usable, extents(segments), infos, looks)
+            looks = sum(
+                1
+                for cand in cands
+                if project.db.cached_moment(moment_key(infos[cand.clip].fingerprint, cand, settings.models.moments))
+                is None
+            )
+        estimates.append(estimate_looks(looks, settings.models.moments))
         if not summary_cached:
             estimates.append(
                 Estimate(
@@ -313,10 +325,36 @@ def run(
     summary_md.write_text(summary_markdown(summary))
     result.outputs["summary_md"] = summary_md
 
+    progress("Moments")
+    extent = extents(segments)
+    moments, moment_stats = find_moments(
+        project,
+        usable,
+        extent,
+        clip_map,
+        claude=claude,
+        model=settings.models.moments,
+        effort=settings.effort.moments,
+        progress=progress,
+    )
+    progress(f"  {len(moments)} moments ({moment_stats})")
+    by_id = {s.id: s for s in segments}
+    pickable = {s.id: s for s in usable}
+    for moment in moments:
+        seg = moment_segment(moment, by_id)
+        pickable[seg.id] = seg
+        lo, hi = extent.get(moment.segment_ids[0], (moment.start, moment.end))
+        pad = seconds_to_frames(0.5, clip_map[moment.clip][0].fps)
+        extent[seg.id] = (max(lo, moment.start - pad), min(hi, moment.end + pad))
+
     width, height = output_size(options.res, options.format)
     centre = {sid: centre_weight(path) for sid, path in strips.items()} if options.format == "reel" else {}
+    for moment in moments:
+        parts = [centre[s] for s in moment.segment_ids if s in centre]
+        if parts:
+            centre[moment.id] = sum(parts) / len(parts)
     ctx = Context(
-        segments={s.id: s for s in usable},
+        segments=pickable,
         clips={k: v[0] for k, v in clip_map.items()},
         flights={f.clip_id: f for f, _, _ in clips},
         music=music,
@@ -332,11 +370,12 @@ def run(
         format=options.format,
         centre=centre,
         pace=options.pace if options.pace is not None else parse_pace(settings.pace),
-        extent=extents(segments),
+        extent=extent,
+        moments={m.id: m for m in moments},
     )
     progress(
-        f"Direct ({options.format}, pace {ctx.pace:g}, shots ~{ctx.pacing.target_s:.1f} s, "
-        f"floor {ctx.pacing.floor_s:.1f} s, "
+        f"Direct ({options.format}, pace {ctx.pace:g}, floor {ctx.rules.floor_s:.1f} s, "
+        f"filler up to {ctx.rules.filler_s:.1f} s, "
         f"{window.beats} beats from {music.beats[window.start_beat]:.2f} s of the track, "
         f"{out_fps[0]}/{out_fps[1]} fps)"
     )

@@ -19,12 +19,14 @@ DEFAULT_DATA_ROOT = Path.home() / "Movies" / "Good Feeling"
 
 class StepModels(BaseModel):
     score: str = "claude-sonnet-5-5"
+    moments: str = "claude-sonnet-5-5"
     understand: str = "claude-opus-5-5"
     direct: str = "claude-opus-5-5"
 
 
 class StepEffort(BaseModel):
     score: str = "low"
+    moments: str = "low"
     understand: str = "medium"
     direct: str = "medium"
 
