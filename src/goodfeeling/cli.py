@@ -61,10 +61,12 @@ def serve(
 def openapi() -> None:
     """Print the API's OpenAPI schema (the web app's types are generated from it)."""
     import json
+    import tempfile
 
     from goodfeeling.server.app import create_app
 
-    typer.echo(json.dumps(create_app().openapi(), indent=2))
+    with tempfile.TemporaryDirectory() as root:
+        typer.echo(json.dumps(create_app(Path(root)).openapi(), indent=2))
 
 
 @app.command()

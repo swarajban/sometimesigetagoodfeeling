@@ -222,6 +222,32 @@ class SegmentOut(BaseModel):
     available: bool
     choice: Choice
     used_in: dict[str, int]
+    moments: list[str]
+
+
+class MomentOut(BaseModel):
+    """A strong move found by joining adjacent segments and a second look; the director can hold it in full."""
+
+    id: str
+    clip: str
+    flight: int
+    kind: str
+    hold: str
+    worth: float
+    start_s: float
+    end_s: float
+    duration_s: float
+    peak_s: float | None
+    description: str
+    reason: str
+    segment_ids: list[str]
+    source: str
+    proxy_url: str
+    thumb_url: str
+    available: bool
+    blocked_by: list[str]
+    choice: Choice
+    used_in: dict[str, int]
 
 
 class AiLogEntry(BaseModel):

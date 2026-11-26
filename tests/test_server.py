@@ -60,7 +60,10 @@ def test_review_choices_persist_and_reach_the_director(media, root, config):
         key=lambda s: s.final_score,
     )
     assert spare, "fixture needs an unused segment to star"
-    excluded, starred = used[0], spare[0].id
+    moments = {m["id"]: m for m in json.loads((first.project.root / "analysis" / "moments.json").read_text())}
+    first_pick = used[0]
+    excluded = moments[first_pick]["segment_ids"][0] if first_pick in moments else first_pick
+    starred = spare[0].id
 
     client = TestClient(create_app(root), base_url="http://127.0.0.1", headers={"X-Goodfeeling": "1"})
     url = "/api/projects/footage/segments"
@@ -81,6 +84,7 @@ def test_review_choices_persist_and_reach_the_director(media, root, config):
     second = run(options, settings, progress=lambda _: None)
     replanned = [s["segment_id"] for s in json.loads(second.outputs["plan_json"].read_text())["plan"]["shots"]]
     assert excluded not in replanned
+    assert first_pick not in replanned
     assert starred in replanned
     gone = segments[excluded]
     edl = EDL.load(second.outputs["edl"])

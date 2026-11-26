@@ -1,7 +1,8 @@
-"""Pacing in seconds: how long shots should be, converted to beats at the track's tempo.
+"""Shot length rules. Length comes from the content (see moments); these are only the guard rails.
 
-FPV moves need time to read (approach, pass, exit), so pacing targets a shot length in seconds rather than a
-fixed beat count, and a floor keeps sustained quick cutting out; only short accent bursts may go below it.
+- a floor no shot goes under, except a short accent burst of 2-4 quick cuts;
+- a cap on filler: only marked moments, or segments scoring at least LONG_SCORE, may hold longer;
+- pace biases how readily the director holds and how much connective footage it keeps.
 """
 
 from __future__ import annotations
@@ -12,17 +13,18 @@ from dataclasses import dataclass
 PACE_NAMES = {"slower": 0.75, "normal": 1.0, "faster": 1.33}
 BURST_MIN, BURST_MAX = 2, 4
 BURST_EVERY_S = 30.0
+LONG_SCORE = 8.0
 
-TARGETS = {
-    ("landscape", "fast"): (3.0, 2.0, 5.0, 1.5),
-    ("landscape", "cinematic"): (5.5, 3.5, 8.0, 1.5),
-    ("reel", "fast"): (2.5, 1.5, 4.0, 1.2),
-    ("reel", "cinematic"): (3.5, 2.0, 5.0, 1.2),
+RULES = {
+    ("landscape", "fast"): (1.5, 2.5),
+    ("landscape", "cinematic"): (1.5, 3.5),
+    ("reel", "fast"): (1.2, 2.0),
+    ("reel", "cinematic"): (1.2, 2.5),
 }
 
 
 def parse_pace(value: str | float) -> float:
-    """`slower`, `normal`, `faster`, or a multiplier on how often it cuts (1.2 = 20% more cuts)."""
+    """`slower`, `normal`, `faster`, or a multiplier (above 1 keeps more short connecting shots)."""
     if isinstance(value, str) and value.strip().lower() in PACE_NAMES:
         return PACE_NAMES[value.strip().lower()]
     try:
@@ -35,28 +37,35 @@ def parse_pace(value: str | float) -> float:
 
 
 @dataclass(frozen=True)
-class Pacing:
-    target_s: float
-    min_s: float
-    max_s: float
+class Rules:
     floor_s: float
+    filler_s: float
+    pace: float
 
-    def for_energy(self, energy: float) -> float:
-        """Shot length for a section: longer holds when it's quiet, shorter when it's loud (energy 0-1)."""
-        return min(self.max_s, max(self.min_s, self.target_s * (1.25 - 0.5 * energy)))
+    @property
+    def filler_share(self) -> float:
+        """Roughly how much of the runtime connective shots get; the rest goes to moments."""
+        return min(0.6, max(0.1, 0.3 * self.pace))
+
+    def describe_pace(self) -> str:
+        if self.pace < 0.95:
+            return "Pace is set slower: hold the big moments readily and keep connecting shots to a minimum."
+        if self.pace > 1.05:
+            return "Pace is set faster: still hold the big moments, but use more short connecting hits between them."
+        return "Pace is normal."
 
 
-def pacing_for(edit_format: str, style: str, pace: float = 1.0) -> Pacing:
-    target, low, high, floor = TARGETS.get((edit_format, style), TARGETS[("landscape", "fast")])
-    return Pacing(target / pace, low / pace, high / pace, floor / pace)
+def rules_for(edit_format: str, style: str, pace: float = 1.0) -> Rules:
+    floor, filler = RULES.get((edit_format, style), RULES[("landscape", "fast")])
+    return Rules(floor_s=floor, filler_s=filler, pace=pace)
 
 
-def beats_for(seconds: float, seconds_per_beat: float) -> int:
-    return max(1, round(seconds / seconds_per_beat))
+def beats_at_most(seconds: float, seconds_per_beat: float) -> int:
+    return max(1, math.floor(seconds / seconds_per_beat + 1e-6))
 
 
-def floor_beats(pacing: Pacing, seconds_per_beat: float) -> int:
-    return max(1, math.ceil(pacing.floor_s / seconds_per_beat - 1e-6))
+def floor_beats(rules: Rules, seconds_per_beat: float) -> int:
+    return max(1, math.ceil(rules.floor_s / seconds_per_beat - 1e-6))
 
 
 def pacing_problems(lengths_s: list[float], floor_s: float) -> list[tuple[int, str]]:

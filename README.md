@@ -105,24 +105,26 @@ director call is new.
 Each shot in the EDL has an optional `crop_x` (0 = keep the left edge, 0.5 = centre, the default, 1 = the right
 edge). Set it by hand for a shot whose subject is off-centre, then re-render with `render --from-edl`.
 
-### Pacing
+### Shot length comes from the content
 
-Pacing is a target shot length in seconds, converted to beats at the track's tempo, so a 90 BPM and a 170 BPM track
-cut at a similar rate:
+A shot lasts as long as what's in it deserves.
 
-| | average shot | most shots | floor |
-|---|---:|---:|---:|
-| `fast` landscape | about 3 s | 2-5 s | 1.5 s |
-| `cinematic` landscape | about 5.5 s | 3.5-8 s | 1.5 s |
-| reel (`fast`) | about 2.5 s | 1.5-4 s | 1.2 s |
-
-Quiet sections hold longer and loud ones a little shorter. The validator rejects shots under the floor, except a
-burst of 2-4 quick cuts used as an accent (at most one per 30 s), so sustained quick cutting isn't possible at
-normal pace. A hold longer than its segment runs on into the clean footage around it in the same clip (never into a
-dropped span or a crash, and never into footage another shot uses).
-
-`--pace slower|normal|faster` or a multiplier (`--pace 1.2` cuts 20% more often; `0.75` is `slower`) scales all of
-this; `"pace"` in the settings file sets the default.
+- **Moments.** After scoring, adjacent strong segments of the same continuous stretch of a clip are joined into
+  candidate moments. The best candidates (about one per 20 s of footage, 6 to 30) get a second look: a grid of 16
+  time-labelled frames across the candidate and a few seconds either side goes to Claude (Sonnet, low effort). It
+  returns where the move starts and ends, what it is, how much it's worth, and whether it deserves a full hold or
+  only works as a short hit. Second looks are cached by content like scores, and the cost is printed in the estimate
+  before anything is spent. On the sample, 10 second looks cost $0.067, about $0.007 each, so a 20-minute session
+  (capped at 30 looks) costs about $0.20.
+- **The director** plays the best moments from approach to exit (8-12 s is fine), and uses ordinary segments as
+  short connecting shots or leaves them out. Every shot's reason says why it gets its length.
+- **The validator** no longer targets an average. It keeps the floor (1.5 s landscape, 1.2 s reel; only a burst of
+  2-4 quick cuts may go under, at most one per 30 s) and caps filler at 2.5 s (2 s for reels, 3.5 s cinematic). Only a
+  marked moment, or a segment scoring 8+, may hold longer. A moment may not be held past its span, so nothing is
+  padded with dead air. Two shots may never use the same footage.
+- **`--pace slower|normal|faster`** or a multiplier is a bias, not a target. Slower holds the big moments more
+  readily and keeps fewer connecting shots; faster keeps more short hits between them. `"pace"` in settings sets
+  the default.
 
 ### Named edits
 
@@ -142,12 +144,12 @@ the data root, `~/Movies/Good Feeling/` by default (override with `--data-root`,
 `data_root` in the settings file):
 
 ```
-app.db                         projects, clips, segments, score cache, Claude log, edits and their revisions,
+app.db                         projects, clips, segments, moments, score and moment caches, Claude log, edits,
                                jobs and their progress, review choices, feedback events
 cache/shots/                   rendered pieces, keyed by content, reused across re-renders
 projects/<name>/
   proxies/                     8-bit 720p H.264 proxies (keyframe every 15 frames)
-  analysis/                    clips.json, signals, segments.json, music.json (hand-editable), summary
+  analysis/                    clips.json, signals, segments.json, moments.json, music.json (hand-editable), summary
   frames/                      labelled frame strips sent to Claude
   edits/edl.json               the default edit (plus revisions/0001.json ...), plan.md, plan.json
   edits/summary.md             session summary, shared by every edit
@@ -165,8 +167,8 @@ Optional JSON at `~/Library/Application Support/Good Feeling/settings.json` on m
 ```json
 {
   "data_root": "~/Movies/Good Feeling",
-  "models": { "score": "claude-sonnet-5-5", "understand": "claude-opus-5-5", "direct": "claude-opus-5-5" },
-  "effort": { "score": "low", "understand": "medium", "direct": "medium" },
+  "models": { "score": "claude-sonnet-5-5", "moments": "claude-sonnet-5-5", "understand": "claude-opus-5-5", "direct": "claude-opus-5-5" },
+  "effort": { "score": "low", "moments": "low", "understand": "medium", "direct": "medium" },
   "weights": { "claude": 0.7, "motion": 0.15, "sharpness": 0.1, "exposure": 0.05 },
   "style_note": "I like low proximity passes over water; skip high cruising.",
   "pace": "normal",

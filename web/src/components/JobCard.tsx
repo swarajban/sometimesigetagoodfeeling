@@ -12,6 +12,7 @@ const STAGES = [
   ['estimate', 'Estimate'],
   ['score', 'Scoring'],
   ['understand', 'Summary'],
+  ['moments', 'Moments'],
   ['direct', 'Director'],
   ['render', 'Render'],
 ] as const
@@ -65,7 +66,7 @@ export function JobCard({ job: initial, title }: { job: Job; title?: string }) {
         </div>
       </header>
 
-      <ol className="mt-3 grid grid-cols-8 gap-1 px-4">
+      <ol className="mt-3 grid grid-cols-9 gap-1 px-4">
         {STAGES.map(([key, label], i) => {
           const done = finished || current > i
           const now = i === current && !finished
@@ -108,7 +109,7 @@ export function JobCard({ job: initial, title }: { job: Job; title?: string }) {
               </tr>
             </thead>
             <tbody className="text-zinc-300 tabular-nums">
-              {job.estimate.steps.map((s) => (
+              {job.estimate.steps.filter((s) => s.requests > 0).map((s) => (
                 <tr key={s.step} className="border-t border-white/5">
                   <td className="py-1">{s.step}</td>
                   <td className="text-zinc-400">{s.model}</td>

@@ -134,6 +134,11 @@ function EditView({ project, edit }: { project: ProjectDetail; edit: EditDetail 
                     </span>
                     <span className="text-[11.5px] text-zinc-500">{(s.end_s - s.start_s).toFixed(1)} s</span>
                     {s.role && <Badge tone={s.role === 'peak' ? 'accent' : 'default'}>{s.role}</Badge>}
+                    {s.segment_id && /^m\d+$/.test(s.segment_id) && (
+                      <Badge tone="accent" title="A whole move, held from approach to exit">
+                        moment
+                      </Badge>
+                    )}
                     {s.starred && (
                       <Badge tone="accent">
                         <Star className="size-3 fill-current" /> starred

@@ -199,6 +199,12 @@ def load_segments(project: Project) -> list:
     return [Segment.model_validate(d) for d in data]
 
 
+def load_moments(project: Project) -> list:
+    from goodfeeling.schemas.moment import Moment
+
+    return [Moment.model_validate(d) for d in project.read_json("analysis/moments.json") or []]
+
+
 def clip_rows(project: Project) -> dict[str, dict[str, Any]]:
     rows = project.db.execute(
         "SELECT clip_id, path, info_json, proxy_path FROM clips WHERE project_id=?", (project.id,)
@@ -422,6 +428,59 @@ def create_app(data_root: Path | None = None) -> FastAPI:
 
     # Segments and review
 
+    def used_by_edit(project: Project) -> dict[str, dict[str, int]]:
+        used: dict[str, dict[str, int]] = {}
+        for r in store.db.execute("SELECT name FROM edits WHERE project_id=?", (project.id,)).fetchall():
+            for i, sid in enumerate(plan_segments(project, r["name"])):
+                used.setdefault(sid, {})[r["name"]] = i
+        return used
+
+    def no_choice() -> dict[str, Any]:
+        return {"include": None, "star": False, "taste": 0}
+
+    @app.get("/api/projects/{slug}/moments", response_model=list[m.MomentOut])
+    def list_moments(slug: str):
+        from goodfeeling.pipeline.run import review_pool
+
+        project = store.project(slug)
+        clips = clip_rows(project)
+        choices = store.db.choices(project.id)
+        _, _, _, excluded = review_pool(load_segments(project), choices)
+        used = used_by_edit(project)
+        out = []
+        for moment in load_moments(project):
+            clip = clips.get(moment.clip)
+            if clip is None:
+                continue
+            fps = fps_of(clip["info"]["fps"])
+            blocked = sorted(excluded.intersection(moment.segment_ids))
+            out.append(
+                m.MomentOut(
+                    id=moment.id,
+                    clip=moment.clip,
+                    flight=moment.flight,
+                    kind=moment.kind,
+                    hold=moment.hold,
+                    worth=moment.worth,
+                    start_s=moment.start / fps,
+                    end_s=moment.end / fps,
+                    duration_s=moment.frames / fps,
+                    peak_s=moment.peak / fps if moment.peak is not None else None,
+                    description=moment.description,
+                    reason=moment.reason,
+                    segment_ids=moment.segment_ids,
+                    source=moment.source,
+                    proxy_url=f"/api/projects/{slug}/proxy/{moment.clip}",
+                    thumb_url=f"/api/projects/{slug}/frame/{moment.clip}/"
+                    f"{moment.peak if moment.peak is not None else (moment.start + moment.end) // 2}.jpg",
+                    available=moment.id not in excluded and not blocked,
+                    blocked_by=blocked,
+                    choice=m.Choice(**(choices.get(moment.id) or no_choice())),
+                    used_in=used.get(moment.id, {}),
+                )
+            )
+        return out
+
     @app.get("/api/projects/{slug}/segments", response_model=list[m.SegmentOut])
     def list_segments(slug: str):
         from goodfeeling.pipeline.direct import HIGH_SCORE_EDGE
@@ -432,10 +491,11 @@ def create_app(data_root: Path | None = None) -> FastAPI:
         clips = clip_rows(project)
         choices = store.db.choices(project.id)
         pool = {s.id for s in review_pool(segments, choices)[0]}
-        used: dict[str, dict[str, int]] = {}
-        for r in store.db.execute("SELECT name FROM edits WHERE project_id=?", (project.id,)).fetchall():
-            for i, sid in enumerate(plan_segments(project, r["name"])):
-                used.setdefault(sid, {})[r["name"]] = i
+        used = used_by_edit(project)
+        covering: dict[str, list[str]] = {}
+        for moment in load_moments(project):
+            for sid in moment.segment_ids:
+                covering.setdefault(sid, []).append(moment.id)
         out = []
         for seg in segments:
             clip = clips.get(seg.clip)
@@ -477,8 +537,9 @@ def create_app(data_root: Path | None = None) -> FastAPI:
                     flags=flags,
                     auto_rejected=rejected,
                     available=seg.id in pool,
-                    choice=m.Choice(**(choice or {"include": None, "star": False, "taste": 0})),
+                    choice=m.Choice(**(choice or no_choice())),
                     used_in=used.get(seg.id, {}),
+                    moments=covering.get(seg.id, []),
                 )
             )
         return out
@@ -487,9 +548,11 @@ def create_app(data_root: Path | None = None) -> FastAPI:
     def set_choice(slug: str, seg_id: str, update: m.ChoiceUpdate):
         project = store.project(slug)
         segments = {s.id: s for s in load_segments(project)}
+        moments = {x.id: x for x in load_moments(project)}
         seg = segments.get(seg_id)
-        if seg is None:
-            raise HTTPException(404, f"no segment {seg_id!r}")
+        moment = moments.get(seg_id)
+        if seg is None and moment is None:
+            raise HTTPException(404, f"no segment or moment {seg_id!r}")
         before = store.db.choices(project.id).get(seg_id, {"include": None, "star": False, "taste": 0})
         after = dict(before)
         if update.reset_include:
@@ -518,9 +581,10 @@ def create_app(data_root: Path | None = None) -> FastAPI:
                 now,
             ),
         )
-        clip = clip_rows(project).get(seg.clip, {})
-        context = json.dumps(
-            {
+        if seg is not None:
+            clip = clip_rows(project).get(seg.clip, {})
+            snapshot = {
+                "type": "segment",
                 "clip": seg.clip,
                 "fingerprint": clip.get("info", {}).get("fingerprint"),
                 "start": seg.start,
@@ -530,7 +594,14 @@ def create_app(data_root: Path | None = None) -> FastAPI:
                 "claude": seg.claude.model_dump() if seg.claude else None,
                 "signals": seg.signals.model_dump(),
             }
-        )
+        else:
+            clip = clip_rows(project).get(moment.clip, {})
+            snapshot = {
+                "type": "moment",
+                "fingerprint": clip.get("info", {}).get("fingerprint"),
+                **moment.model_dump(),
+            }
+        context = json.dumps(snapshot)
         events = []
         if after["taste"] != before["taste"]:
             events.append(

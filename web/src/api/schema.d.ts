@@ -89,6 +89,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{slug}/moments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Moments */
+        get: operations["list_moments_api_projects__slug__moments_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{slug}/segments": {
         parameters: {
             query?: never;
@@ -722,6 +739,53 @@ export interface components {
             /** Created At */
             created_at: number;
         };
+        /**
+         * MomentOut
+         * @description A strong move found by joining adjacent segments and a second look; the director can hold it in full.
+         */
+        MomentOut: {
+            /** Id */
+            id: string;
+            /** Clip */
+            clip: string;
+            /** Flight */
+            flight: number;
+            /** Kind */
+            kind: string;
+            /** Hold */
+            hold: string;
+            /** Worth */
+            worth: number;
+            /** Start S */
+            start_s: number;
+            /** End S */
+            end_s: number;
+            /** Duration S */
+            duration_s: number;
+            /** Peak S */
+            peak_s: number | null;
+            /** Description */
+            description: string;
+            /** Reason */
+            reason: string;
+            /** Segment Ids */
+            segment_ids: string[];
+            /** Source */
+            source: string;
+            /** Proxy Url */
+            proxy_url: string;
+            /** Thumb Url */
+            thumb_url: string;
+            /** Available */
+            available: boolean;
+            /** Blocked By */
+            blocked_by: string[];
+            choice: components["schemas"]["Choice"];
+            /** Used In */
+            used_in: {
+                [key: string]: number;
+            };
+        };
         /** MusicInfo */
         MusicInfo: {
             /** Path */
@@ -922,6 +986,8 @@ export interface components {
             used_in: {
                 [key: string]: number;
             };
+            /** Moments */
+            moments: string[];
         };
         /** SettingsOut */
         SettingsOut: {
@@ -1134,6 +1200,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_moments_api_projects__slug__moments_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MomentOut"][];
                 };
             };
             /** @description Validation Error */

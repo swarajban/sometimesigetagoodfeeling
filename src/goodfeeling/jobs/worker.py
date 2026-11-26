@@ -34,6 +34,7 @@ STAGES = {
     "Cost estimate": "estimate",
     "Score": "score",
     "Understand": "understand",
+    "Moments": "moments",
     "Direct": "direct",
     "Render": "render",
 }

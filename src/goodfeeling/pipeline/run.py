@@ -18,6 +18,8 @@ from goodfeeling.media.encoders import choose_encoder
 from goodfeeling.media.frames import extract_frame
 from goodfeeling.pipeline.direct import Context, direct, eligible, extents, plan_json
 from goodfeeling.pipeline.ingest import ingest, load_clips
+from goodfeeling.pipeline.moments import cache_key as moment_key
+from goodfeeling.pipeline.moments import candidate_limit, candidates, estimate_looks, find_moments, moment_segment
 from goodfeeling.pipeline.music import analyze_music, apply_drop_override
 from goodfeeling.pipeline.pacing import parse_pace
 from goodfeeling.pipeline.render import render
@@ -32,7 +34,7 @@ from goodfeeling.schemas.music import MusicAnalysis
 from goodfeeling.schemas.segment import Segment
 from goodfeeling.settings import Settings
 from goodfeeling.store.project import DEFAULT_EDIT, Project, check_edit_name
-from goodfeeling.timebase import Rate, normalize_rate
+from goodfeeling.timebase import Rate, normalize_rate, seconds_to_frames
 
 log = logging.getLogger("goodfeeling")
 
@@ -146,12 +148,22 @@ def estimate_run(
     if directing:
         table = len(segments) * 45
         summary_cached = False
+        infos = {cid: info for cid, (info, _) in clip_map.items()}
+        looks = candidate_limit(infos)
         if not uncached:
             score_step(project, settings, segments, clip_map, None, lambda _: None)
             usable = eligible(segments)
             summary_cached = (
                 project.read_json(f"analysis/summary-{summary_key(settings, usable, False)}.json") is not None
             )
+            cands = candidates(usable, extents(segments), infos, looks)
+            looks = sum(
+                1
+                for cand in cands
+                if project.db.cached_moment(moment_key(infos[cand.clip].fingerprint, cand, settings.models.moments))
+                is None
+            )
+        estimates.append(estimate_looks(looks, settings.models.moments))
         if not summary_cached:
             estimates.append(
                 Estimate(
@@ -227,23 +239,22 @@ def music_step(project: Project, music_path: Path, drop_at: float | None, progre
     return music
 
 
-def review_pool(segments: list[Segment], choices: dict[str, dict]) -> tuple[list[Segment], set[str], set[str]]:
-    """What the director may use after the pilot's review: the automatic pick minus excluded segments plus included
-    ones (even those the automatic filter rejected). Starred segments are always in and must be used. Returns the
-    pool, the starred ids, and the disliked ids."""
+def review_pool(
+    segments: list[Segment], choices: dict[str, dict]
+) -> tuple[list[Segment], set[str], set[str], set[str]]:
+    """The pilot's review applied to segments: the automatic pick minus excluded segments plus included ones (even
+    those the automatic filter rejected). Starred segments are always in. Returns the pool and the starred,
+    disliked, and excluded ids; choices can name moments (m01...) as well as segments."""
     auto = {s.id for s in eligible(segments)}
-    pool, starred, disliked = [], set(), set()
-    for seg in segments:
-        choice = choices.get(seg.id, {})
-        include = choice.get("include")
-        if choice.get("star"):
-            starred.add(seg.id)
-        elif include is False or (include is None and seg.id not in auto):
-            continue
-        pool.append(seg)
-        if choice.get("taste", 0) < 0:
-            disliked.add(seg.id)
-    return pool, starred, disliked
+    starred = {sid for sid, c in choices.items() if c.get("star")}
+    disliked = {sid for sid, c in choices.items() if c.get("taste", 0) < 0}
+    excluded = {sid for sid, c in choices.items() if c.get("include") is False and sid not in starred}
+    pool = [
+        s
+        for s in segments
+        if s.id in starred or (s.id not in excluded and (s.id in auto or choices.get(s.id, {}).get("include")))
+    ]
+    return pool, starred, disliked, excluded
 
 
 def dominant_fps(clips: list[tuple[FlightInfo, ClipInfo, Path]]) -> Rate:
@@ -351,18 +362,45 @@ def run(
     summary_md.write_text(summary_markdown(summary))
     result.outputs["summary_md"] = summary_md
 
+    progress("Moments")
+    moments, moment_stats = find_moments(
+        project,
+        usable,
+        extents(segments),
+        clip_map,
+        claude=claude,
+        model=settings.models.moments,
+        effort=settings.effort.moments,
+        progress=progress,
+    )
+    progress(f"  {len(moments)} moments ({moment_stats})")
     choices = project.db.choices(project.id)
-    pool, starred, disliked = review_pool(segments, choices)
-    excluded = {sid for sid, c in choices.items() if c.get("include") is False and sid not in starred}
+    pool, starred, disliked, excluded = review_pool(segments, choices)
     if choices:
         progress(
             f"  review: {len(pool)} segments available, {len(starred)} starred, {len(excluded)} excluded, "
             f"{len(disliked)} disliked"
         )
+    extent = extents([s for s in segments if s.id not in excluded])
+    by_id = {s.id: s for s in segments}
+    pickable = {s.id: s for s in pool}
+    for moment in moments:
+        if moment.id in excluded or excluded.intersection(moment.segment_ids):
+            continue
+        seg = moment_segment(moment, by_id)
+        pickable[seg.id] = seg
+        lo, hi = extent.get(moment.segment_ids[0], (moment.start, moment.end))
+        pad = seconds_to_frames(0.5, clip_map[moment.clip][0].fps)
+        extent[seg.id] = (max(lo, moment.start - pad), min(hi, moment.end + pad))
+
     width, height = output_size(options.res, options.format)
     centre = {sid: centre_weight(path) for sid, path in strips.items()} if options.format == "reel" else {}
+    for moment in moments:
+        parts = [centre[s] for s in moment.segment_ids if s in centre]
+        if parts:
+            centre[moment.id] = sum(parts) / len(parts)
     ctx = Context(
-        segments={s.id: s for s in pool},
+        segments=pickable,
         clips={k: v[0] for k, v in clip_map.items()},
         flights={f.clip_id: f for f, _, _ in clips},
         music=music,
@@ -378,13 +416,14 @@ def run(
         format=options.format,
         centre=centre,
         pace=options.pace if options.pace is not None else parse_pace(settings.pace),
-        extent=extents([s for s in segments if s.id not in excluded]),
-        must_use=starred,
+        extent=extent,
+        moments={m.id: m for m in moments if m.id in pickable},
+        must_use=starred & set(pickable),
         disliked=disliked,
     )
     progress(
-        f"Direct ({options.format}, pace {ctx.pace:g}, shots ~{ctx.pacing.target_s:.1f} s, "
-        f"floor {ctx.pacing.floor_s:.1f} s, "
+        f"Direct ({options.format}, pace {ctx.pace:g}, floor {ctx.rules.floor_s:.1f} s, "
+        f"filler up to {ctx.rules.filler_s:.1f} s, "
         f"{window.beats} beats from {music.beats[window.start_beat]:.2f} s of the track, "
         f"{out_fps[0]}/{out_fps[1]} fps)"
     )

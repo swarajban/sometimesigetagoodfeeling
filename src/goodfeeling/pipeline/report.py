@@ -47,9 +47,9 @@ def plan_markdown(result: DirectorResult, ctx: Context, meter: Meter | None = No
         "",
         "## Shots",
         "",
-        "| # | at | beats | segment | source | speed | join | score | role | reason |"
+        "| # | at | beats | length | pick | source | speed | join | score | role | reason |"
         + (" crop |" if ctx.reel else ""),
-        "|---|----|------:|---------|--------|------:|------|------:|------|--------|"
+        "|---|----|------:|-------:|------|--------|------:|------|------:|------|--------|"
         + ("-----:|" if ctx.reel else ""),
     ]
     for entry, planned in zip(timeline, plan.shots, strict=False):
@@ -57,6 +57,7 @@ def plan_markdown(result: DirectorResult, ctx: Context, meter: Meter | None = No
         src = edl.sources[shot.clip]
         lines.append(
             f"| {entry.index + 1} | {format_timecode(entry.start, edl.output.fps)} | {planned.beats} | "
+            f"{entry.length / fps_float(edl.output.fps):.1f} s | "
             f"{planned.segment_id} | {shot.clip} {format_timecode(shot.in_, src.fps)}-"
             f"{format_timecode(shot.out, src.fps)} | {shot.constant_speed:g} | {shot.transition} | "
             f"{(shot.score or 0):.1f} | {planned.role} | {planned.reason.replace('|', '/')} |"

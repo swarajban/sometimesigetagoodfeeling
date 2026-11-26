@@ -101,6 +101,28 @@ MIGRATIONS: list[str] = [
     DROP TABLE project_state;
     """,
     """
+    CREATE TABLE moment_cache (
+        key TEXT PRIMARY KEY,
+        fingerprint TEXT NOT NULL,
+        start_frame INTEGER NOT NULL,
+        end_frame INTEGER NOT NULL,
+        params TEXT NOT NULL,
+        model TEXT NOT NULL,
+        prompt_version TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        created_at REAL NOT NULL
+    );
+    CREATE TABLE moments (
+        project_id INTEGER NOT NULL REFERENCES projects(id),
+        moment_id TEXT NOT NULL,
+        clip_id TEXT NOT NULL,
+        start_frame INTEGER NOT NULL,
+        end_frame INTEGER NOT NULL,
+        moment_json TEXT NOT NULL,
+        PRIMARY KEY (project_id, moment_id)
+    );
+    """,
+    """
     ALTER TABLE edits ADD COLUMN options_json TEXT;
     CREATE TABLE jobs (
         id INTEGER PRIMARY KEY,
@@ -232,6 +254,28 @@ class Database:
                 json.dumps(result),
                 time.time(),
             ),
+        )
+
+    def cached_moment(self, key: str) -> dict[str, Any] | None:
+        row = self.execute("SELECT result_json FROM moment_cache WHERE key=?", (key,)).fetchone()
+        return json.loads(row["result_json"]) if row else None
+
+    def store_moment(
+        self,
+        key: str,
+        *,
+        fingerprint: str,
+        start: int,
+        end: int,
+        params: str,
+        model: str,
+        prompt_version: str,
+        result: dict[str, Any],
+    ) -> None:
+        self.execute(
+            "INSERT OR REPLACE INTO moment_cache (key, fingerprint, start_frame, end_frame, params, model, "
+            "prompt_version, result_json, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (key, fingerprint, start, end, params, model, prompt_version, json.dumps(result), time.time()),
         )
 
     def choices(self, project_id: int) -> dict[str, dict[str, Any]]:
