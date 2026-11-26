@@ -136,7 +136,7 @@ def local_scores(segments: list[Segment]) -> None:
         seg.local_parts = {"motion": motion_score, "sharpness": sharp_score, "exposure": exposure_score}
 
 
-def blend(segments: list[Segment], weights: Weights) -> None:
+def blend(segments: list[Segment], weights: Weights, props_penalty: float) -> None:
     """Final score: weighted blend of Claude's score and local signals, minus local crash/blur penalties."""
     for seg in segments:
         parts = seg.local_parts or {
@@ -159,7 +159,7 @@ def blend(segments: list[Segment], weights: Weights) -> None:
             score -= 1.0
         if seg.claude is not None:
             p = seg.claude.penalties
-            score -= 0.5 * sum([p.blur, p.crash, p.horizon_chaos, p.props_in_view])
+            score -= 0.5 * sum([p.blur, p.crash, p.horizon_chaos]) + props_penalty * p.props_in_view
         seg.final_score = round(float(np.clip(score, 0, 10)), 2)
 
 

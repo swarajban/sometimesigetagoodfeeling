@@ -59,6 +59,7 @@ class Settings(BaseModel):
     lut: str | None = None
     stabilized_dir: str | None = None
     flight_gap_s: float = 90.0
+    props_penalty: float = 0.0
     score_batch_size: int = 4
     max_cost_usd: float = 5.0
     render: RenderSettings = Field(default_factory=RenderSettings)
