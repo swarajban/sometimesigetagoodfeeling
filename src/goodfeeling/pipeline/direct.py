@@ -58,6 +58,8 @@ class Context:
     centre: dict[str, float] = field(default_factory=dict)
     pace: float = 1.0
     extent: dict[str, tuple[int, int]] = field(default_factory=dict)
+    must_use: set[str] = field(default_factory=set)
+    disliked: set[str] = field(default_factory=set)
 
     @property
     def seconds_per_beat(self) -> float:
@@ -201,6 +203,27 @@ def fps_float(fps: Rate) -> float:
     return fps[0] / fps[1]
 
 
+def usable_stars(ctx: Context) -> set[str]:
+    """Starred segments that can hold a shot at the pacing floor, so a plan can be required to use them."""
+    result = set()
+    for sid in ctx.must_use:
+        seg = ctx.segments.get(sid)
+        if seg is None:
+            continue
+        lo, hi = ctx.bounds(seg)
+        if _seconds(ctx, seg, hi - lo) >= _need_seconds(ctx, ctx.floor_beats):
+            result.add(sid)
+    return result
+
+
+def must_use_problems(ctx: Context, plan: EditPlan) -> list[Violation]:
+    used = {p.segment_id for p in plan.shots}
+    return [
+        Violation(None, "must_use", f"{sid} is starred by the pilot and must be in the edit")
+        for sid in sorted(usable_stars(ctx) - used)
+    ]
+
+
 def build_edl(ctx: Context, plan: EditPlan) -> tuple[EDL | None, list[Violation]]:
     violations: list[Violation] = []
     shots: list[Shot] = []
@@ -271,6 +294,7 @@ def build_edl(ctx: Context, plan: EditPlan) -> tuple[EDL | None, list[Violation]
                 tags=seg.claude.tags if seg.claude else [],
                 description=seg.claude.description if seg.claude else "",
                 reason=planned.reason,
+                starred=seg.id in ctx.must_use,
             )
         )
         beat = end_beat
@@ -452,6 +476,12 @@ def select(ctx: Context) -> EditPlan:
     pool = sorted(ctx.segments.values(), key=lambda s: (-ctx.rank(s), ctx.chrono_key(s)))
     clean = [s for s in pool if not s.signals.crash and not (s.claude and s.claude.penalties.crash)]
     pool = clean + [s for s in pool if s not in clean]
+    stars = usable_stars(ctx)
+    pool = (
+        [s for s in pool if s.id in stars]
+        + [s for s in pool if s.id not in stars and s.id not in ctx.disliked]
+        + [s for s in pool if s.id not in stars and s.id in ctx.disliked]
+    )
     while True:
         chosen = _pick(ctx, pool, len(plan_slots), max(b for _, b, _ in plan_slots))
         if len(chosen) >= len(plan_slots) or len(plan_slots) == 1:
@@ -556,9 +586,18 @@ def fix(ctx: Context, plan: EditPlan) -> EditPlan:
         if kept[longest].beats > floor:
             kept[longest] = kept[longest].model_copy(update={"beats": kept[longest].beats - 1})
         else:
-            kept.pop(min(range(len(kept)), key=lambda i: ctx.segments[kept[i].segment_id].final_score))
+            kept.pop(
+                min(
+                    range(len(kept)),
+                    key=lambda i: (
+                        kept[i].segment_id in ctx.must_use,
+                        ctx.segments[kept[i].segment_id].final_score,
+                    ),
+                )
+            )
         total = sum(p.beats for p in kept)
     spares = [s for s in sorted(ctx.segments.values(), key=lambda s: -ctx.rank(s)) if s.id not in seen]
+    spares.sort(key=lambda s: (s.id not in ctx.must_use, s.id in ctx.disliked))
     while total < ctx.window.beats and spares:
         beats = min(ctx.beats_per_cut(total), ctx.window.beats - total)
         if ctx.window.beats - total - beats < floor:
@@ -621,6 +660,15 @@ def director_prompt(ctx: Context, segments_table: str) -> str:
         f"Style: {ctx.style}. Output {ctx.width}x{ctx.height} at {fps_float(ctx.out_fps):.3f} fps.",
         f"Pilot's style note: {ctx.style_note or '(none)'}",
     ]
+    stars = sorted(usable_stars(ctx))
+    if stars:
+        lines.append(
+            f"Pilot's must-use segments (starred in review; every one must be in the plan): {', '.join(stars)}"
+        )
+    if ctx.disliked:
+        lines.append(
+            "Pilot disliked these segments; use one only if nothing else fits: " + ", ".join(sorted(ctx.disliked))
+        )
     if ctx.reel:
         lines += ["", REEL_BRIEF]
     lines += [
@@ -679,6 +727,8 @@ def segments_for_director(ctx: Context) -> str:
                 ("props", seg.claude and seg.claude.penalties.props_in_view),
                 ("horizon", seg.claude and seg.claude.penalties.horizon_chaos),
                 (seg.kind, seg.kind != "flight"),
+                ("STARRED", seg.id in ctx.must_use),
+                ("disliked", seg.id in ctx.disliked),
             )
             if on
         ]
@@ -730,6 +780,7 @@ def direct(ctx: Context, *, claude: Claude | None, model: str, effort: str, prog
     plan = plan_from_tool(call.input)
     for round_index in range(MAX_REPAIR_ROUNDS + 1):
         edl, violations = build_edl(ctx, plan)
+        violations += must_use_problems(ctx, plan)
         rounds.append([str(v) for v in violations])
         if not violations and edl is not None:
             return DirectorResult(plan=plan, edl=edl, rounds=rounds)
@@ -756,6 +807,7 @@ def direct(ctx: Context, *, claude: Claude | None, model: str, effort: str, prog
     progress("  repairs exhausted; the deterministic fixer finishes the plan")
     fixed = fix(ctx, plan)
     edl, violations = build_edl(ctx, fixed)
+    violations += must_use_problems(ctx, fixed)
     rounds.append([str(v) for v in violations])
     if not violations and edl is not None:
         return DirectorResult(plan=fixed, edl=edl, rounds=rounds, fixed=True)
