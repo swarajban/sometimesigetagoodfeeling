@@ -75,7 +75,7 @@ def make_context(out_fps, src_fps, tempo=125.0, beats=400, offset=0.37):
 )
 def test_cuts_on_beats_without_drift(out_fps, src_fps):
     ctx = make_context(out_fps, src_fps)
-    pattern = [4, 5, 6, 5]
+    pattern = [6, 6, 6, 7]
     shots, total = [], 0
     for i in range(80):
         beats = pattern[i % 4]
@@ -110,7 +110,7 @@ def test_cuts_on_beats_without_drift(out_fps, src_fps):
 
 def test_slower_source_never_accumulates():
     ctx = make_context((60000, 1001), (30000, 1001))
-    shots = [PlannedShot(segment_id=f"c{i + 1:02d}s01", beats=[4, 5, 6, 5][i % 4], reason="r") for i in range(60)]
+    shots = [PlannedShot(segment_id=f"c{i + 1:02d}s01", beats=[6, 6, 6, 7][i % 4], reason="r") for i in range(48)]
     edl, violations = build_edl(ctx, EditPlan(shots=shots))
     assert violations == [] and edl is not None
     beat = 0
@@ -166,6 +166,7 @@ def test_pacing_floor_allows_only_short_bursts():
         ctx, EditPlan(shots=[PlannedShot(segment_id=f"c{i + 1:02d}s01", beats=2, reason="r") for i in range(150)])
     )
     assert any(v.code == "pace" for v in violations), "sustained 2-beat cutting is rejected at normal pace"
+    assert any(v.code == "too_many_cuts" for v in violations)
     plan = select(ctx)
     assert min(p.beats for p in plan.shots) * 60 / ctx.music.tempo >= ctx.pacing.floor_s
 

@@ -127,6 +127,14 @@ class Context:
         section = self.music.section_at(self.window.start_beat + edit_beat)
         return max(self.floor_beats, beats_for(self.section_seconds(section), self.seconds_per_beat))
 
+    @property
+    def target_shots(self) -> int:
+        return max(1, round(self.window.beats * self.seconds_per_beat / self.pacing.target_s))
+
+    @property
+    def max_shots(self) -> int:
+        return max(self.target_shots + 2, math.ceil(self.target_shots * 1.2))
+
     def bounds(self, seg: Segment) -> tuple[int, int]:
         """Frames a shot built on this segment may use: the segment, or the clean continuous footage around it."""
         return self.extent.get(seg.id, (seg.start, seg.end))
@@ -274,6 +282,14 @@ def build_edl(ctx: Context, plan: EditPlan) -> tuple[EDL | None, list[Violation]
             )
         )
         beat = end_beat
+    if len(shots) > ctx.max_shots:
+        violations.append(
+            Violation(
+                None,
+                "too_many_cuts",
+                f"{len(shots)} shots; this pace is about {ctx.target_shots} (at most {ctx.max_shots}). Hold longer.",
+            )
+        )
     tolerance = max(2, round(0.05 * ctx.window.beats))
     if abs(beat - ctx.window.beats) > tolerance:
         violations.append(
@@ -646,7 +662,8 @@ def director_prompt(ctx: Context, segments_table: str) -> str:
     pace = ctx.pacing
     lines += [
         "",
-        f"Pacing: shots average about {pace.target_s:.1f} s ({beats_for(pace.target_s, spb)} beats); most between "
+        f"Pacing: about {ctx.target_shots} shots in total (at most {ctx.max_shots}), so shots average about "
+        f"{pace.target_s:.1f} s ({beats_for(pace.target_s, spb)} beats); most between "
         f"{pace.min_s:.1f} and {pace.max_s:.1f} s. Hold longer in quiet sections and a little shorter in loud ones. "
         "FPV moves need time to read: give the best moments (a gap thread, a reveal, a close pass) a hold long "
         "enough to show the approach, the pass and the exit. No shot may be shorter than "
