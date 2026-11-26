@@ -28,8 +28,9 @@ cd web && npm install && npm run build && cd ..
 uv run goodfeeling serve
 ```
 
-`serve` starts the server on http://127.0.0.1:8765 (it never listens beyond this machine), starts the worker that runs
-jobs, and opens the browser. Ctrl-C stops both. `--port`, `--no-open` and `--data-root` do what they say.
+`serve` starts the server on http://127.0.0.1:8765, or the next free port if that one is taken (it never listens
+beyond this machine), starts the worker that runs jobs, and opens the browser at the URL it prints. Ctrl-C stops both.
+`--port` picks the port and stops if it's taken; `--no-open` and `--data-root` do what they say.
 
 - **Projects** lists every session with its edits and its Claude spend. Opening one never re-scores it.
 - **Import** takes a footage folder and a music file (type a path or browse), length, style, resolution, format,

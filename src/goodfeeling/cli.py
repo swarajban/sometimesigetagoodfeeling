@@ -43,7 +43,9 @@ def _confirm(yes: bool):
 
 @app.command()
 def serve(
-    port: Annotated[int, typer.Option(help="Port on 127.0.0.1 for the app.")] = 8765,
+    port: Annotated[
+        int | None, typer.Option(help="Port on 127.0.0.1 for the app (default: 8765, or the next free one).")
+    ] = None,
     data_root: DataRoot = None,
     open_browser: Annotated[bool, typer.Option("--open/--no-open", help="Open the app in the browser.")] = True,
     dev: Annotated[
