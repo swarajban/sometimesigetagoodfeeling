@@ -264,7 +264,7 @@ def render(
             renders = edits.parent / "renders" / edl_path.parent.relative_to(edits)
         out = renders / f"{edl_path.stem}-{time.strftime('%Y%m%d-%H%M%S')}.mp4"
     out = ensure_outside(out, [Path(s.path).parent for s in edl.sources.values()])
-    encoder = choose_encoder(settings.render, max(edl.output.width, edl.output.height))
+    encoder = choose_encoder(settings.render, min(edl.output.width, edl.output.height))
     started = time.time()
     render_edl(
         edl, out, encoder, root / "cache" / "shots", audio_bitrate=settings.render.audio_bitrate, progress=typer.echo

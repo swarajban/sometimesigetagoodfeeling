@@ -448,7 +448,7 @@ def run(
 
     if options.render:
         progress("Render")
-        encoder = choose_encoder(settings.render, max(width, height))
+        encoder = choose_encoder(settings.render, min(width, height))
         final = render(
             directed.edl,
             project.edit_path(edit, "renders", "final.mp4"),

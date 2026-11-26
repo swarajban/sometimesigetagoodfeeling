@@ -60,9 +60,5 @@ def ffmpeg_version() -> str:
 @lru_cache(maxsize=1)
 def available_filters() -> frozenset[str]:
     proc = subprocess.run([ffmpeg_bin(), "-hide_banner", "-filters"], capture_output=True, text=True)
-    names = set()
-    for line in proc.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and len(parts[0]) == 3 and parts[0] != "---":
-            names.add(parts[1])
-    return frozenset(names)
+    _, _, table = proc.stdout.partition("------")
+    return frozenset(parts[1] for parts in map(str.split, table.splitlines()) if len(parts) >= 2)
