@@ -14,6 +14,7 @@ PACE_NAMES = {"slower": 0.75, "normal": 1.0, "faster": 1.33}
 BURST_MIN, BURST_MAX = 2, 4
 BURST_EVERY_S = 30.0
 LONG_SCORE = 8.0
+THIN_HOLD_S = 4.0
 
 RULES = {
     ("landscape", "fast"): (1.5, 2.5),

@@ -14,6 +14,7 @@ log = logging.getLogger(__name__)
 
 PROXY_HEIGHT = 720
 PROXY_VERSION = "p1"
+PROXY_THREADS = 8
 
 
 def proxy_filters(clip: ClipInfo, lut: str | None) -> str:
@@ -60,6 +61,8 @@ def make_proxy(clip: ClipInfo, out: Path, lut: str | None = None) -> Path:
             "15",
             "-sc_threshold",
             "0",
+            "-threads",
+            str(PROXY_THREADS),
             *REC709_TAGS,
             "-movflags",
             "+faststart",

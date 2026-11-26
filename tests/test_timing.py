@@ -7,6 +7,7 @@ import pytest
 from goodfeeling.pipeline.direct import Context, build_edl, select
 from goodfeeling.pipeline.stretch import StretchError, choose_window
 from goodfeeling.schemas.clip import ClipInfo, FlightInfo
+from goodfeeling.schemas.moment import Moment
 from goodfeeling.schemas.music import MusicAnalysis, MusicSection
 from goodfeeling.schemas.plan import EditPlan, PlannedShot
 from goodfeeling.schemas.segment import Segment
@@ -191,7 +192,6 @@ def test_long_hold_extends_into_clean_neighbouring_footage_only():
 
 
 def test_moments_hold_in_full_and_filler_stays_short():
-    from goodfeeling.schemas.moment import Moment
 
     ctx = make_context((30000, 1001), (30000, 1001), tempo=120.0)
     for seg in ctx.segments.values():
@@ -216,3 +216,23 @@ def test_moments_hold_in_full_and_filler_stays_short():
     )
     _, violations = build_edl(ctx, padded)
     assert {v.code for v in violations} >= {"hold"}
+
+
+@pytest.mark.parametrize("with_moment", [True, False])
+def test_thin_footage_still_plans_a_shorter_valid_edit(with_moment):
+    ctx = make_context((30000, 1001), (30000, 1001), tempo=120.0)
+    full = ctx.window.beats
+    ordinary = ctx.segments["c01s01"]
+    ordinary.end, ordinary.final_score = 300, 6.0
+    ctx.segments = {"c01s01": ordinary}
+    if with_moment:
+        ctx.moments = {"m01": Moment(id="m01", clip="c01", flight=1, start=300, end=480, worth=9.0, hold="full")}
+        ctx.segments["m01"] = Segment(
+            id="m01", clip="c01", flight=1, start=300, end=480, kind="moment", final_score=9.0, phash="f" * 16
+        )
+    plan = select(ctx)
+    edl, violations = build_edl(ctx, plan)
+    assert violations == [] and edl is not None
+    assert ctx.window.beats < full and any("footage was limited" in note for note in ctx.notes)
+    assert len({p.segment_id for p in plan.shots}) == len(ctx.segments), "every bit of footage gets used"
+    assert all(p.beats * 0.5 <= 4.0 for p in plan.shots if p.segment_id == "c01s01"), "no long dull holds"
