@@ -74,6 +74,32 @@ MIGRATIONS: list[str] = [
         current_revision INTEGER
     );
     """,
+    """
+    CREATE TABLE edl_revisions_v2 (
+        project_id INTEGER NOT NULL REFERENCES projects(id),
+        edit TEXT NOT NULL DEFAULT 'default',
+        revision INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        PRIMARY KEY (project_id, edit, revision)
+    );
+    INSERT INTO edl_revisions_v2 (project_id, edit, revision, path, origin, created_at)
+        SELECT project_id, 'default', revision, path, origin, created_at FROM edl_revisions;
+    DROP TABLE edl_revisions;
+    ALTER TABLE edl_revisions_v2 RENAME TO edl_revisions;
+    CREATE TABLE edits (
+        project_id INTEGER NOT NULL REFERENCES projects(id),
+        name TEXT NOT NULL,
+        format TEXT NOT NULL DEFAULT 'landscape',
+        current_revision INTEGER,
+        updated_at REAL NOT NULL,
+        PRIMARY KEY (project_id, name)
+    );
+    INSERT INTO edits (project_id, name, format, current_revision, updated_at)
+        SELECT project_id, 'default', 'landscape', current_revision, 0 FROM project_state;
+    DROP TABLE project_state;
+    """,
 ]
 
 

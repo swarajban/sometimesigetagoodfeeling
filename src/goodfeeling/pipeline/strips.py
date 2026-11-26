@@ -76,7 +76,7 @@ def contact_sheet(items: list[tuple[str, Image.Image]], columns: int = 4, thumb_
     thumbs = []
     for caption, image in items:
         thumb = image.copy()
-        thumb.thumbnail((thumb_w, thumb_w))
+        thumb.thumbnail((thumb_w, thumb_w * 2))
         thumbs.append((caption, thumb))
     tw = thumb_w
     th = max(t.size[1] for _, t in thumbs) if thumbs else 180
@@ -90,3 +90,30 @@ def contact_sheet(items: list[tuple[str, Image.Image]], columns: int = 4, thumb_
         sheet.paste(thumb, (x, y + caption_h))
         draw.text((x + 4, y + 3), caption, fill=(240, 240, 240), font=font(16))
     return sheet
+
+
+def centre_weight(strip_path: Path, aspect: float = 9 / 16) -> float:
+    """How much of a strip's detail sits in the centre band a vertical crop keeps (1.0 = evenly spread)."""
+    import cv2
+
+    gray = np.asarray(Image.open(strip_path).convert("L"), dtype=np.float32)[LABEL_H:]
+    height = gray.shape[0]
+    band = int(height * aspect)
+    ratios = []
+    x = 0
+    while x + THUMB_W <= gray.shape[1]:
+        detail = np.abs(cv2.Laplacian(gray[:, x : x + THUMB_W], cv2.CV_32F))
+        left = (THUMB_W - band) // 2
+        ratios.append(float(detail[:, left : left + band].mean() / (detail.mean() + 1e-6)))
+        x += THUMB_W + GAP
+    return round(float(np.mean(ratios)), 2) if ratios else 1.0
+
+
+def crop_to(image: Image.Image, width: int, height: int, crop_x: float) -> Image.Image:
+    """Show the framing an output of width x height takes from `image` (a centre crop moved by crop_x)."""
+    w, h = image.size
+    if w * height <= h * width:
+        return image
+    crop_w = round(h * width / height)
+    left = round((w - crop_w) * crop_x)
+    return image.crop((left, 0, left + crop_w, h))

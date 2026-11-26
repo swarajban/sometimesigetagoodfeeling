@@ -4,7 +4,8 @@ from fractions import Fraction
 
 import pytest
 
-from goodfeeling.pipeline.direct import Context, build_edl, choose_window
+from goodfeeling.pipeline.direct import Context, build_edl, select
+from goodfeeling.pipeline.stretch import StretchError, choose_window
 from goodfeeling.schemas.clip import ClipInfo, FlightInfo
 from goodfeeling.schemas.music import MusicAnalysis, MusicSection
 from goodfeeling.schemas.plan import EditPlan, PlannedShot
@@ -54,7 +55,7 @@ def make_context(out_fps, src_fps, tempo=125.0, beats=400, offset=0.37):
             final_score=5,
             phash=f"{n * 0x1111111111:016x}"[-16:],
         )
-    window = choose_window(music, out_fps, 300 * spb)
+    window, _ = choose_window(music, out_fps, 300 * spb)
     return Context(
         segments=segments,
         clips=clips,
@@ -117,3 +118,37 @@ def test_slower_source_never_accumulates():
         assert abs(entry.start - ctx.window.frame_of(beat)) <= 1
         beat += planned.beats
     assert edl.total_frames() - ctx.window.frame_of(beat) in (-1, 0, 1)
+
+
+def test_pinned_stretch_snaps_to_downbeats_and_sets_length():
+    ctx = make_context((30000, 1001), (30000, 1001), tempo=120.0, beats=400, offset=0.25)
+    music = ctx.music
+    window, notes = choose_window(music, (30000, 1001), 60, start_s=21.0)
+    assert music.beats[window.start_beat] == 20.25 and window.start_beat % 4 == 0
+    assert window.beats == 120 and notes
+    window, _ = choose_window(music, (30000, 1001), 60, start_s=20.25, end_s=50.3)
+    assert window.beats == 60
+    for bad in (
+        {"start_s": -1},
+        {"start_s": 999},
+        {"start_s": 20.0, "end_s": 21.0},
+        {"start_s": 30, "end_s": 20},
+        {"end_s": 30},
+    ):
+        with pytest.raises(StretchError):
+            choose_window(music, (30000, 1001), 60, **bad)
+
+
+def test_stretch_without_a_drop_peaks_on_its_loudest_section():
+    from goodfeeling.schemas.music import MusicSection
+
+    ctx = make_context((30000, 1001), (30000, 1001), tempo=120.0, beats=200, offset=0.0)
+    ctx.music.sections = [
+        MusicSection(label="main", start_beat=0, end_beat=48, start_s=0, end_s=24, energy=0.3),
+        MusicSection(label="main", start_beat=48, end_beat=96, start_s=24, end_s=48, energy=0.9),
+        MusicSection(label="drop", start_beat=96, end_beat=200, start_s=48, end_s=100, energy=1.0),
+    ]
+    ctx.window, _ = choose_window(ctx.music, (30000, 1001), 40, start_s=0.0)
+    assert ctx.peak() == (48, 80)
+    plan = select(ctx)
+    assert any(p.role == "peak" for p in plan.shots)

@@ -25,7 +25,7 @@ from goodfeeling.timebase import as_fraction, mp4_timescale, seek_seconds
 
 log = logging.getLogger(__name__)
 
-RENDER_VERSION = "r1"
+RENDER_VERSION = "r2"
 
 
 @dataclass
@@ -113,7 +113,9 @@ def _span_input(edl: EDL, span: Span) -> tuple[list[str], str]:
     w, h = edl.output.width, edl.output.height
     chain = [f"setpts=(PTS-STARTPTS)/{float(speed)!r}", f"fps={num}/{den}"]
     chain += to_rec709(_transfer(path), source.lut)
+    aspect = f"{w}/{h}"
     chain += [
+        f"crop=w='if(gt(iw/ih,{aspect}),trunc(ih*{aspect}/2)*2,iw)':h=ih:x='(iw-ow)*{span.shot.crop_x:.4f}':y=0",
         f"scale={w}:{h}:force_original_aspect_ratio=decrease:flags=bicubic",
         f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2",
         "setsar=1",
@@ -160,6 +162,7 @@ def piece_key(edl: EDL, piece: Piece, encoder: Encoder) -> str:
                 "in": span.shot.in_,
                 "out": span.shot.out,
                 "speed": span.shot.speed,
+                "crop": span.shot.crop_x,
                 "rel": span.rel_start,
                 "count": span.count,
             }
