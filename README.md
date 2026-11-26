@@ -22,6 +22,9 @@ On Linux, install ffmpeg from your package manager; renders use libx264 there.
 
 ```sh
 uv run goodfeeling run ./footage --music song.mp3 --length 150 --style fast --res 1080
+uv run goodfeeling run ./footage --music song.mp3 --music-start 1:20 --length 120
+uv run goodfeeling run ./footage --music song.mp3 --format reel
+uv run goodfeeling music song.mp3 --length 120
 uv run goodfeeling score ./footage
 uv run goodfeeling render --from-edl "~/Movies/Good Feeling/projects/footage/edits/edl.json"
 uv run goodfeeling doctor [clip.MP4]
@@ -33,6 +36,35 @@ Before the first Claude call it prints a cost estimate and, in a terminal, asks 
 (`--yes` skips the question; `--max-cost` refuses to start above a limit). Useful options: `--style
 cinematic`, `--res 4k`, `--drop-at 64.5` (seconds into the track), `--project NAME`, `--no-ai` (local signals
 and the deterministic director, no API calls), `--model-score`, `--model-direct`.
+
+### Choosing the stretch of the song
+
+By default `run` picks the stretch itself (from the first downbeat, or later if that would leave the drop out).
+To choose it, run `goodfeeling music song.mp3 --length 120`: it prints the tempo, duration, a table of sections
+with start and end times, labels and energy, and the default stretch for that length plus a few alternatives, each
+as the exact `--music-start` value to paste. Then:
+
+- `--music-start 1:20` (seconds or `MM:SS(.mmm)`) starts the edit on the downbeat nearest that time, and
+  `--length` sets the end.
+- `--music-start 1:20 --music-end 3:20` uses that stretch; it sets the length, and `--length` is ignored.
+- If the chosen stretch has no drop, the director puts its strongest shots on the stretch's highest-energy section.
+
+### Vertical reels (TikTok, Instagram Reels)
+
+`--format reel` makes a 1080x1920 edit, 30 s unless you pass `--length`. Every shot is centre-cropped from the
+source to 9:16 and scaled to fill. The director opens on one of the strongest shots in the first second, cuts
+faster, and prefers shots whose detail sits in the centre of the frame. Unless `--music-start` pins it, the music
+starts on the track's highest-energy section. A reel of already-scored footage makes no scoring calls; only the
+director call is new.
+
+Each shot in the EDL has an optional `crop_x` (0 = keep the left edge, 0.5 = centre, the default, 1 = the right
+edge). Set it by hand for a shot whose subject is off-centre, then re-render with `render --from-edl`.
+
+### Named edits
+
+A project can hold several edits. `--edit NAME` names one; a reel is named `reel` unless you say otherwise. The
+default edit keeps the paths below; a named edit lives beside it in `edits/NAME/` and `renders/NAME/`, so a
+reel never overwrites the landscape edit.
 
 `render --from-edl` re-renders any EDL, including one you edited by hand. Shot `in`/`out` accept frame numbers
 or `"MM:SS.mmm"` strings.
@@ -46,14 +78,17 @@ the data root, `~/Movies/Good Feeling/` by default (override with `--data-root`,
 `data_root` in the settings file):
 
 ```
-app.db                         projects, clips, segments, score cache, Claude log, EDL revisions
+app.db                         projects, clips, segments, score cache, Claude log, edits and their revisions
 cache/shots/                   rendered pieces, keyed by content, reused across re-renders
 projects/<name>/
   proxies/                     8-bit 720p H.264 proxies (keyframe every 15 frames)
   analysis/                    clips.json, signals, segments.json, music.json (hand-editable), summary
   frames/                      labelled frame strips sent to Claude
-  edits/edl.json               the edit (plus revisions/0001.json ...), plan.md, plan.json, summary.md
-  renders/final.mp4            and contact_sheet.jpg
+  edits/edl.json               the default edit (plus revisions/0001.json ...), plan.md, plan.json
+  edits/summary.md             session summary, shared by every edit
+  edits/<name>/edl.json        a named edit, e.g. edits/reel/ (with its own revisions/, plan.md, plan.json)
+  renders/final.mp4            the default edit's render, and contact_sheet.jpg
+  renders/<name>/final.mp4     a named edit's render and contact sheet
   logs/ai.jsonl, logs/run.log  every prompt and response (images replaced by size and hash), run log
 ```
 
