@@ -16,6 +16,8 @@ from goodfeeling.schemas.edl import EDL
 from goodfeeling.server.app import create_app
 from goodfeeling.settings import Settings
 from goodfeeling.store.db import Database
+from goodfeeling.store.project import slugify
+from tests.conftest import _clip
 
 
 @pytest.fixture(scope="module")
@@ -26,6 +28,17 @@ def config(tmp_path_factory):
         patch.setenv("GOODFEELING_CONFIG", str(path))
         patch.delenv("ANTHROPIC_API_KEY", raising=False)
         yield path
+
+
+@pytest.fixture(scope="module")
+def footage(media, tmp_path_factory):
+    """Four flights rather than the shared fixture's one, so the director has room to honour review choices."""
+    folder = tmp_path_factory.mktemp("footage4")
+    for name in os.listdir(media["footage"]):
+        os.link(media["footage"] / name, folder / name)
+    _clip(folder / "DJI_20250101130000_0003_D.MP4", 16, "h=-0.006", "2025-01-01T13:00:00Z")
+    _clip(folder / "DJI_20250101140000_0004_D.MP4", 16, "v=-0.006", "2025-01-01T14:00:00Z")
+    return folder
 
 
 @pytest.fixture(scope="module")
@@ -46,11 +59,9 @@ def test_expired_lease_is_taken_over(tmp_path):
     assert queue.renew(db, job_id, "me:2")
 
 
-def test_review_choices_persist_and_reach_the_director(media, root, config):
+def test_review_choices_persist_and_reach_the_director(media, footage, root, config):
     settings = Settings()
-    options = RunOptions(
-        footage=media["footage"], music=media["music"], length=8, no_ai=True, data_root=root, render=False
-    )
+    options = RunOptions(footage=footage, music=media["music"], length=8, no_ai=True, data_root=root, render=False)
     first = run(options, settings, progress=lambda _: None)
     plan = json.loads(first.outputs["plan_json"].read_text())["plan"]
     used = [s["segment_id"] for s in plan["shots"]]
@@ -66,7 +77,7 @@ def test_review_choices_persist_and_reach_the_director(media, root, config):
     starred = spare[0].id
 
     client = TestClient(create_app(root), base_url="http://127.0.0.1", headers={"X-Goodfeeling": "1"})
-    url = "/api/projects/footage/segments"
+    url = f"/api/projects/{first.project.slug}/segments"
     assert client.put(f"{url}/{excluded}/choice", json={}, headers={"X-Goodfeeling": ""}).status_code == 403
     assert client.get("/api/projects", headers={"Host": "evil.example"}).status_code == 400
     assert client.put(f"{url}/{excluded}/choice", json={"include": False}).json()["include"] is False
@@ -93,11 +104,9 @@ def test_review_choices_persist_and_reach_the_director(media, root, config):
             assert shot.out <= gone.start or shot.in_ >= gone.end, "an excluded segment's footage was used"
 
 
-def test_job_of_a_dead_worker_resumes_on_restart(media, root, config):
+def test_job_of_a_dead_worker_resumes_on_restart(media, footage, root, config):
     db = Database(root / "app.db")
-    options = RunOptions(
-        footage=media["footage"], music=media["music"], length=8, no_ai=True, data_root=root, render=False
-    )
+    options = RunOptions(footage=footage, music=media["music"], length=8, no_ai=True, data_root=root, render=False)
     job_id = queue.enqueue(db, "run", {"options": options.to_json()}, project_id=None, edit="default")
     dead = subprocess.Popen(["true"])
     dead.wait()
@@ -123,7 +132,7 @@ def test_job_of_a_dead_worker_resumes_on_restart(media, root, config):
     assert any("resuming" in m for m in messages)
     assert "Resumed from the last checkpoint" in messages
     result = json.loads(job["result_json"])
-    assert (root / "projects" / "footage" / result["outputs"]["edl"]).exists()
+    assert (root / "projects" / slugify(footage.name) / result["outputs"]["edl"]).exists()
 
 
 def test_api_key_is_never_returned_in_full(tmp_path, config):
