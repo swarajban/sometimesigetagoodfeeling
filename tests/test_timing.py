@@ -235,3 +235,4 @@ def test_thin_footage_still_plans_a_shorter_valid_edit(with_moment):
     assert violations == [] and edl is not None
     assert ctx.window.beats < full and any("footage was limited" in note for note in ctx.notes)
     assert len({p.segment_id for p in plan.shots}) == len(ctx.segments), "every bit of footage gets used"
+    assert all(p.beats * 0.5 <= 4.0 for p in plan.shots if p.segment_id == "c01s01"), "no long dull holds"

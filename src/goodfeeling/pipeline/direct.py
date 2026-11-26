@@ -12,7 +12,15 @@ from dataclasses import dataclass, field
 
 from goodfeeling.ai.client import Claude, tool_result
 from goodfeeling.ai.prompts import DIRECT_SYSTEM, DIRECT_TOOL
-from goodfeeling.pipeline.pacing import LONG_SCORE, Rules, beats_at_most, floor_beats, pacing_problems, rules_for
+from goodfeeling.pipeline.pacing import (
+    LONG_SCORE,
+    THIN_HOLD_S,
+    Rules,
+    beats_at_most,
+    floor_beats,
+    pacing_problems,
+    rules_for,
+)
 from goodfeeling.pipeline.render import render_problems
 from goodfeeling.pipeline.signals import hamming
 from goodfeeling.pipeline.stretch import EditWindow
@@ -135,8 +143,10 @@ class Context:
             if moment.hold == "short":
                 return filler, f"{seg.id} is marked as a short hit, so at most {filler:.1f} s"
             return self.span_s(seg) + 0.6, f"{seg.id}'s move lasts {self.span_s(seg):.1f} s; don't pad it with dead air"
-        if seg.final_score >= LONG_SCORE or self.limited:
+        if seg.final_score >= LONG_SCORE:
             return self.span_s(seg) + 1.0, f"{seg.id} is {self.span_s(seg):.1f} s of footage"
+        if self.limited:
+            return max(filler, THIN_HOLD_S), f"footage is limited, so ordinary shots may hold up to {THIN_HOLD_S:g} s"
         return filler, (
             f"{seg.id} scores {seg.final_score:.1f}; only marked moments or segments scoring "
             f"{LONG_SCORE:g}+ may hold longer than {self.rules.filler_s:.1f} s"
@@ -564,7 +574,8 @@ def select(ctx: Context) -> EditPlan:
             break
 
     def grow() -> int:
-        """Let the chosen shots, the best first, hold longer to fill what connecting shots couldn't."""
+        """Let the chosen shots, the best first, hold longer to fill what connecting shots couldn't: moments and strong
+        footage as far as they run, ordinary footage only up to THIN_HOLD_S once footage is limited."""
         grown = 0
         for item in sorted(chosen, key=lambda c: (c[0].id not in ctx.moments, -ctx.rank(c[0]))):
             while used + grown < total and cap(item[0], item[1] + 1) > item[1]:
