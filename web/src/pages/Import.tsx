@@ -190,9 +190,9 @@ export function Import() {
                 value={paceMode}
                 onChange={(v) => setPace(v === 'custom' ? '1.2' : v)}
                 options={[
-                  { value: 'slower', label: 'Slower', title: 'Longer holds' },
+                  { value: 'slower', label: 'Slower', title: 'Holds the big moments more readily' },
                   { value: 'normal', label: 'Normal' },
-                  { value: 'faster', label: 'Faster', title: 'Cuts more often' },
+                  { value: 'faster', label: 'Faster', title: 'More short hits between moments' },
                   { value: 'custom', label: '×' },
                 ]}
               />

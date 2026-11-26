@@ -115,8 +115,13 @@ def run_job(db: Database, job: dict, owner: str) -> None:
             return
         raise NeedsApproval(estimate_dict(estimates, expected, worst, settings.max_cost_usd))
 
-    resumed = bool(queue.events_after(db, job_id, 0, limit=1))
-    queue.add_event(db, job_id, "Resumed from the last checkpoint" if resumed else "Started")
+    earlier = queue.events_after(db, job_id, 0, limit=100_000)
+    if not earlier:
+        queue.add_event(db, job_id, "Started")
+    elif earlier[-1]["message"].startswith("Approved"):
+        queue.add_event(db, job_id, "Continuing with the approved estimate")
+    else:
+        queue.add_event(db, job_id, "Resumed from the last checkpoint")
     try:
         options = RunOptions.from_json(params["options"])
         result = run(options, settings, progress=progress, estimate_hook=gate)

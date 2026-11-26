@@ -7,6 +7,7 @@ import { Badge, Button, ErrorNote, Field, Loading, Panel, Segmented, TextInput }
 const STEPS = [
   ['score', 'Scoring', 'Looks at every segment'],
   ['understand', 'Session summary', 'One call per session'],
+  ['moments', 'Moments', 'Second look at the strongest moves'],
   ['direct', 'Director', 'Plans the edit and repairs it'],
 ] as const
 const WEIGHTS = [
@@ -151,7 +152,7 @@ function SettingsForm({ initial }: { initial: SettingsOut }) {
 
       <Panel title="Edit defaults">
         <div className="space-y-4">
-          <Field label="Pace" hint="How often edits cut. A number is a multiplier: 1.2 cuts 20% more often.">
+          <Field label="Pace" hint="How readily the director holds: slower holds the big moments more and keeps fewer connecting shots; faster keeps more short hits. A number is a multiplier.">
             <div className="flex items-center gap-2">
               <Segmented
                 value={paceMode}

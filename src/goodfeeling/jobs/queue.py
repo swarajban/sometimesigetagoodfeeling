@@ -127,12 +127,14 @@ def finish(
     done = status in FINISHED
     db.execute(
         "UPDATE jobs SET status=?, result_json=COALESCE(?, result_json), error=?, "
+        "attempts=CASE WHEN ?='approval' THEN MAX(0, attempts-1) ELSE attempts END, "
         "estimate_json=COALESCE(?, estimate_json), lease_owner=NULL, lease_expires=NULL, updated_at=?, "
         "finished_at=? WHERE id=? AND (? IS NULL OR lease_owner=?)",
         (
             status,
             json.dumps(result) if result is not None else None,
             error,
+            status,
             json.dumps(estimate) if estimate is not None else None,
             now,
             now if done else None,
