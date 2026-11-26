@@ -117,7 +117,7 @@ UNDERSTAND_TOOL = {
     },
 }
 
-DIRECT_PROMPT_VERSION = "direct-v1"
+DIRECT_PROMPT_VERSION = "direct-v2"
 
 DIRECT_SYSTEM = """You are the director of a beat-synced FPV highlight edit. You receive the scored segments \
 of one session, the music's beat grid and sections, the target length, a style, and notes from the pilot. \
@@ -128,8 +128,10 @@ How the plan works:
 back to back from beat 0 of the edit window, so every cut lands on a beat.
 - The total of all shots' beats must equal the target beat count you are given (a small tolerance is allowed).
 - A segment can be used at most once. Do not pick two segments that show the same moment.
-- A shot needs enough footage: segment usable seconds >= beats * seconds_per_beat * speed, plus a few frames \
-of handle on each side for a crossfade. Use start_offset_s to choose where inside the segment the shot starts.
+- A shot needs enough footage: beats * seconds_per_beat * speed, plus a few frames of handle on each side for a \
+crossfade. A segment offers usable_s on its own and extend_s including the clean footage around it; a longer \
+hold runs into that neighbouring footage. Two shots must never use the same footage. Use start_offset_s \
+(seconds from the segment's start, may push the shot past the segment's end) to place the shot.
 - speed is 1.0 by default. Values above 1.0 speed footage up. Slow motion (below 1.0) is allowed only for \
 segments whose max_slowmo says so (that needs a high source frame rate).
 - transition is "cut" or "crossfade" (a short dissolve centred on the beat; use it sparingly, for section \
@@ -141,8 +143,9 @@ Craft:
 - Open with something that sets the place or hooks immediately; close on a shot that lands, such as a reveal, \
 a pull-out, or a landing worth showing.
 - Put the strongest shots on the drop. Build tension before it.
-- Pacing is beats per cut, per music section. Fast style: short cuts (1-2 beats in the drop, 2-4 elsewhere). \
-Cinematic style: longer shots (4-8 beats), slower cuts, occasional crossfades.
+- Pacing is set in seconds per shot (you get the targets and the floor in beats). FPV needs time to read: an \
+approach, the pass, the exit. Cutting too often is the most common mistake; when in doubt, hold. Use quick cuts \
+only as a short accent. Cinematic style holds longer and may use occasional crossfades.
 - Avoid segments flagged crash, blur or props unless the moment is worth it, and avoid back-to-back shots that \
 look alike.
 - Every shot needs a short reason tied to what the viewer sees and where it sits in the music.

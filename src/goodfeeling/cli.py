@@ -60,6 +60,10 @@ def run(
         str | None,
         typer.Option(help="Where in the track the edit starts: seconds or MM:SS(.mmm); snaps to a downbeat."),
     ] = None,
+    pace: Annotated[
+        str | None,
+        typer.Option(help="How often it cuts: slower, normal, faster, or a multiplier like 1.2 (default: settings)."),
+    ] = None,
     music_end: Annotated[
         str | None, typer.Option(help="Where in the track the edit ends; with --music-start it sets the length.")
     ] = None,
@@ -88,12 +92,14 @@ def run(
         raise typer.BadParameter("res must be 1080 or 4k")
     if edit_format not in ("landscape", "reel"):
         raise typer.BadParameter("format must be landscape or reel")
+    from goodfeeling.pipeline.pacing import parse_pace
     from goodfeeling.pipeline.stretch import StretchError, parse_time
 
     try:
         start_s = parse_time(music_start) if music_start else None
         end_s = parse_time(music_end) if music_end else None
-    except StretchError as exc:
+        pace_value = parse_pace(pace) if pace else None
+    except (StretchError, ValueError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     settings = _settings(max_cost, {"score": model_score, "understand": model_understand, "direct": model_direct})
     started = time.time()
@@ -114,6 +120,7 @@ def run(
                 edit=edit,
                 music_start=start_s,
                 music_end=end_s,
+                pace=pace_value,
             ),
             settings,
             confirm=_confirm(yes),

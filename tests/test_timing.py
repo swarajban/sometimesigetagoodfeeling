@@ -75,7 +75,7 @@ def make_context(out_fps, src_fps, tempo=125.0, beats=400, offset=0.37):
 )
 def test_cuts_on_beats_without_drift(out_fps, src_fps):
     ctx = make_context(out_fps, src_fps)
-    pattern = [3, 4, 5, 3]
+    pattern = [4, 5, 6, 5]
     shots, total = [], 0
     for i in range(80):
         beats = pattern[i % 4]
@@ -110,7 +110,7 @@ def test_cuts_on_beats_without_drift(out_fps, src_fps):
 
 def test_slower_source_never_accumulates():
     ctx = make_context((60000, 1001), (30000, 1001))
-    shots = [PlannedShot(segment_id=f"c{i + 1:02d}s01", beats=[3, 4, 5, 3][i % 4], reason="r") for i in range(80)]
+    shots = [PlannedShot(segment_id=f"c{i + 1:02d}s01", beats=[4, 5, 6, 5][i % 4], reason="r") for i in range(60)]
     edl, violations = build_edl(ctx, EditPlan(shots=shots))
     assert violations == [] and edl is not None
     beat = 0
@@ -152,3 +152,19 @@ def test_stretch_without_a_drop_peaks_on_its_loudest_section():
     assert ctx.peak() == (48, 80)
     plan = select(ctx)
     assert any(p.role == "peak" for p in plan.shots)
+
+
+def test_pacing_floor_allows_only_short_bursts():
+    from goodfeeling.pipeline.pacing import pacing_problems
+
+    assert pacing_problems([3.0, 1.0, 3.0], 1.5)
+    assert not pacing_problems([3.0, 1.0, 1.0, 0.8, 3.0, 2.5], 1.5)
+    assert pacing_problems([3.0] + [1.0] * 5 + [3.0], 1.5)
+    assert pacing_problems([1.0, 1.0, 3.0, 1.0, 1.0, 3.0], 1.5), "one burst per 30 s"
+    ctx = make_context((30000, 1001), (30000, 1001))
+    edl, violations = build_edl(
+        ctx, EditPlan(shots=[PlannedShot(segment_id=f"c{i + 1:02d}s01", beats=2, reason="r") for i in range(150)])
+    )
+    assert any(v.code == "pace" for v in violations), "sustained 2-beat cutting is rejected at normal pace"
+    plan = select(ctx)
+    assert min(p.beats for p in plan.shots) * 60 / ctx.music.tempo >= ctx.pacing.floor_s

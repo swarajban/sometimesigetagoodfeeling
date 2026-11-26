@@ -16,9 +16,10 @@ from goodfeeling.ai.pricing import cost_usd, image_tokens, text_tokens
 from goodfeeling.ai.prompts import DIRECT_SYSTEM, DIRECT_TOOL, UNDERSTAND_PROMPT_VERSION, UNDERSTAND_SYSTEM
 from goodfeeling.media.encoders import choose_encoder
 from goodfeeling.media.frames import extract_frame
-from goodfeeling.pipeline.direct import Context, direct, eligible, plan_json
+from goodfeeling.pipeline.direct import Context, direct, eligible, extents, plan_json
 from goodfeeling.pipeline.ingest import ingest, load_clips
 from goodfeeling.pipeline.music import analyze_music, apply_drop_override
+from goodfeeling.pipeline.pacing import parse_pace
 from goodfeeling.pipeline.render import render
 from goodfeeling.pipeline.report import plan_markdown
 from goodfeeling.pipeline.score import Estimate, build_strip, cache_key, estimate_scoring, score_segments
@@ -59,6 +60,7 @@ class RunOptions:
     edit: str | None = None
     music_start: float | None = None
     music_end: float | None = None
+    pace: float | None = None
     res: str = "1080"
     project: str | None = None
     data_root: Path | None = None
@@ -329,9 +331,13 @@ def run(
         lut=settings.lut,
         format=options.format,
         centre=centre,
+        pace=options.pace if options.pace is not None else parse_pace(settings.pace),
+        extent=extents(segments),
     )
     progress(
-        f"Direct ({options.format}, {window.beats} beats from {music.beats[window.start_beat]:.2f} s of the track, "
+        f"Direct ({options.format}, pace {ctx.pace:g}, shots ~{ctx.pacing.target_s:.1f} s, "
+        f"floor {ctx.pacing.floor_s:.1f} s, "
+        f"{window.beats} beats from {music.beats[window.start_beat]:.2f} s of the track, "
         f"{out_fps[0]}/{out_fps[1]} fps)"
     )
     directed = direct(

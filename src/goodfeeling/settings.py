@@ -53,6 +53,7 @@ class Settings(BaseModel):
     effort: StepEffort = Field(default_factory=StepEffort)
     weights: Weights = Field(default_factory=Weights)
     style_note: str = ""
+    pace: str = "normal"
     lut: str | None = None
     stabilized_dir: str | None = None
     flight_gap_s: float = 90.0

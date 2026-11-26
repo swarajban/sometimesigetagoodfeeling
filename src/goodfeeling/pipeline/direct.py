@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from goodfeeling.ai.client import Claude, tool_result
 from goodfeeling.ai.prompts import DIRECT_SYSTEM, DIRECT_TOOL
+from goodfeeling.pipeline.pacing import Pacing, beats_for, floor_beats, pacing_for, pacing_problems
 from goodfeeling.pipeline.render import render_problems
 from goodfeeling.pipeline.signals import hamming
 from goodfeeling.pipeline.stretch import EditWindow
@@ -35,10 +36,6 @@ MAX_REPAIR_ROUNDS = 3
 HIGH_SCORE_EDGE = 7.0
 DUPLICATE_HAMMING = 12
 DUPLICATE_GAP_S = 2.0
-PACING = {
-    "fast": {"intro": 4, "build": 2, "drop": 2, "main": 2, "outro": 4},
-    "cinematic": {"intro": 8, "build": 4, "drop": 4, "main": 4, "outro": 8},
-}
 
 
 @dataclass
@@ -59,6 +56,8 @@ class Context:
     lut: str | None = None
     format: str = "landscape"
     centre: dict[str, float] = field(default_factory=dict)
+    pace: float = 1.0
+    extent: dict[str, tuple[int, int]] = field(default_factory=dict)
 
     @property
     def seconds_per_beat(self) -> float:
@@ -101,6 +100,29 @@ class Context:
             return "drop"
         return "main" if label == "drop" else label
 
+    @property
+    def pacing(self) -> Pacing:
+        return pacing_for(self.format, self.style, self.pace)
+
+    @property
+    def floor_beats(self) -> int:
+        return floor_beats(self.pacing, self.seconds_per_beat)
+
+    def section_seconds(self, section: MusicSection | None) -> float:
+        """Target shot length for a section, from its energy relative to the rest of the stretch."""
+        energies = [s.energy for _, _, s in self.in_window()] or [0.5]
+        low, high = min(energies), max(energies)
+        energy = 0.5 if section is None or high - low < 1e-6 else (section.energy - low) / (high - low)
+        return self.pacing.for_energy(energy)
+
+    def beats_per_cut(self, edit_beat: int) -> int:
+        section = self.music.section_at(self.window.start_beat + edit_beat)
+        return max(self.floor_beats, beats_for(self.section_seconds(section), self.seconds_per_beat))
+
+    def bounds(self, seg: Segment) -> tuple[int, int]:
+        """Frames a shot built on this segment may use: the segment, or the clean continuous footage around it."""
+        return self.extent.get(seg.id, (seg.start, seg.end))
+
     def rank(self, seg: Segment) -> float:
         """Selection score; reels favour segments whose detail sits in the centre, since the sides are cropped."""
         if not self.reel:
@@ -127,6 +149,34 @@ class DirectorResult:
     rounds: list[list[str]] = field(default_factory=list)
     fixed: bool = False
     fallback: bool = False
+
+
+def extents(segments: list[Segment]) -> dict[str, tuple[int, int]]:
+    """For each segment, the continuous clean footage it sits in: neighbouring segments of the same clip with no
+    gap (a dropped span) and no crash flag between them."""
+
+    def crashed(seg: Segment) -> bool:
+        return seg.signals.crash or bool(seg.claude and seg.claude.penalties.crash)
+
+    result: dict[str, tuple[int, int]] = {}
+    by_clip: dict[str, list[Segment]] = {}
+    for seg in segments:
+        by_clip.setdefault(seg.clip, []).append(seg)
+    for clip_segments in by_clip.values():
+        clip_segments.sort(key=lambda s: s.start)
+        run: list[Segment] = []
+        for seg in [*clip_segments, None]:
+            joins = seg is not None and run and not crashed(seg) and seg.start - run[-1].end <= 1
+            if joins:
+                run.append(seg)
+                continue
+            for member in run:
+                result[member.id] = (run[0].start, run[-1].end)
+            run = [] if seg is None else [seg]
+            if seg is not None and crashed(seg):
+                result[seg.id] = (seg.start, seg.end)
+                run = []
+    return result
 
 
 def eligible(segments: list[Segment]) -> list[Segment]:
@@ -182,18 +232,19 @@ def build_edl(ctx: Context, plan: EditPlan) -> tuple[EDL | None, list[Violation]
             violations.append(Violation(i, "too_long", f"plan runs past the edit's {ctx.window.beats} beats"))
             break
         need, length = nearest_source_frames(ctx.window.frame_of(end_beat) - position, clip.fps, ctx.out_fps, speed)
-        if need > seg.frames:
-            have = seg.frames / fps_float(clip.fps)
+        lo, hi = ctx.bounds(seg)
+        if need > hi - lo:
+            have = (hi - lo) / fps_float(clip.fps)
             violations.append(
                 Violation(
                     i,
                     "too_short",
-                    f"{seg.id} has {have:.2f} s but {planned.beats} beats at "
+                    f"{seg.id} and the clean footage around it give {have:.2f} s, but {planned.beats} beats at "
                     f"speed {speed} need {need / fps_float(clip.fps):.2f} s",
                 )
             )
         start = seg.start + seconds_to_frames(max(0.0, planned.start_offset_s), clip.fps)
-        start = max(seg.start, min(start, seg.end - need))
+        start = max(lo, min(start, hi - need))
         if not planned.reason.strip():
             violations.append(Violation(i, "reason", "every shot needs a reason"))
         transition = planned.transition if shots else "cut"
@@ -273,6 +324,14 @@ def check_edl(ctx: Context, edl: EDL, plan: EditPlan, beat_starts: list[int]) ->
         if abs(entry.start - wanted) > allowed:
             violations.append(Violation(entry.index, "off_beat", f"starts at frame {entry.start}, beat is {wanted}"))
     violations += [Violation(index, "crossfade", message) for index, message in render_problems(edl)]
+    fps = fps_float(ctx.out_fps)
+    lengths = [entry.length / fps for entry in timeline]
+    violations += [Violation(index, "pace", message) for index, message in pacing_problems(lengths, ctx.pacing.floor_s)]
+    for a in range(len(timeline)):
+        for b in range(a + 1, len(timeline)):
+            sa, sb = timeline[a].shot, timeline[b].shot
+            if sa.clip == sb.clip and sa.in_ < sb.out and sb.in_ < sa.out:
+                violations.append(Violation(b, "overlap", f"uses the same footage as shot {a + 1}"))
     by_seg = {}
     for i, planned in enumerate(plan.shots):
         if planned.segment_id in ctx.segments:
@@ -307,39 +366,50 @@ def check_speed_keyframes(edl: EDL) -> list[str]:
     ]
 
 
-def pacing_for(style: str, label: str, reel: bool = False) -> int:
-    beats = PACING.get(style, PACING["fast"]).get(label, 2)
-    return max(2, beats // 2) if reel else beats
-
-
 def slots(ctx: Context) -> list[tuple[int, int, str]]:
-    """(start_beat, beats, section label) for each cut, following section pacing."""
+    """(start beat, beats, section label) for each cut, from the target shot length in each section."""
     result = []
     beat = 0
     while beat < ctx.window.beats:
-        label = ctx.section_label(beat)
-        length = min(pacing_for(ctx.style, label, ctx.reel), ctx.window.beats - beat)
-        result.append((beat, length, label))
+        length = min(ctx.beats_per_cut(beat), ctx.window.beats - beat)
+        result.append((beat, length, ctx.section_label(beat)))
         beat += length
-    if len(result) > 1 and result[-1][1] < pacing_for(ctx.style, result[-1][2], ctx.reel) / 2:
+    if len(result) > 1 and result[-1][1] < ctx.floor_beats:
         last = result.pop()
         prev = result.pop()
         result.append((prev[0], prev[1] + last[1], prev[2]))
     return result
 
 
-def _need_seconds(ctx: Context, beats: int, clip: ClipInfo) -> float:
+def _need_seconds(ctx: Context, beats: int) -> float:
     return beats * ctx.seconds_per_beat + 2 * ctx.transition_frames / fps_float(ctx.out_fps)
 
 
+def _seconds(ctx: Context, seg: Segment, frames: int) -> float:
+    return frames / fps_float(ctx.clips[seg.clip].fps)
+
+
+def _same_run(ctx: Context, a: Segment, b: Segment) -> bool:
+    return a.clip == b.clip and ctx.bounds(a) == ctx.bounds(b)
+
+
 def _pick(ctx: Context, pool: list[Segment], count: int, beats: int) -> list[Segment]:
+    """Best segments that can hold `beats`. A segment too short on its own may borrow the clean footage around
+    it, but then nothing else from that stretch of footage is picked, so shots never overlap."""
     chosen: list[Segment] = []
+    extended: list[Segment] = []
+    need = _need_seconds(ctx, beats)
     for seg in pool:
         if len(chosen) == count:
             break
         clip = ctx.clips[seg.clip]
-        if seg.frames / fps_float(clip.fps) < _need_seconds(ctx, beats, clip):
+        if any(_same_run(ctx, seg, other) for other in extended):
             continue
+        if _seconds(ctx, seg, seg.frames) < need:
+            lo, hi = ctx.bounds(seg)
+            if _seconds(ctx, seg, hi - lo) < need or any(_same_run(ctx, seg, other) for other in chosen):
+                continue
+            extended.append(seg)
         if any(
             c.clip == seg.clip
             and hamming(c.phash, seg.phash) <= DUPLICATE_HAMMING
@@ -361,8 +431,15 @@ def _merge_shortest(plan_slots: list[tuple[int, int, str]]) -> list[tuple[int, i
     return [*plan_slots[:best], (a[0], a[1] + b[1], a[2]), *plan_slots[best + 2 :]]
 
 
+def _pacing_list(ctx: Context) -> list[dict]:
+    result = []
+    for a, _, section in ctx.in_window():
+        result.append({"section": ctx.music.sections.index(section), "beats_per_cut": ctx.beats_per_cut(a)})
+    return result
+
+
 def select(ctx: Context) -> EditPlan:
-    """Deterministic plan: best segments, chronological, strongest ones moved onto the drop."""
+    """Deterministic plan: best segments, chronological, strongest ones moved onto the peak."""
     plan_slots = slots(ctx)
     pool = sorted(ctx.segments.values(), key=lambda s: (-ctx.rank(s), ctx.chrono_key(s)))
     clean = [s for s in pool if not s.signals.crash and not (s.claude and s.claude.penalties.crash)]
@@ -386,7 +463,7 @@ def select(ctx: Context) -> EditPlan:
         for i in range(len(plan_slots)):
             ordered.append(stars.pop(0) if i in drop_positions else rest.pop(0))
         if ordered != chosen:
-            order_note = "The highest-scoring shots are moved onto the drop; everything else stays chronological."
+            order_note = "The highest-scoring shots are moved onto the peak; everything else stays chronological."
         chosen = ordered
     if ctx.reel and chosen:
         best = max(range(len(chosen)), key=lambda i: ctx.rank(chosen[i]))
@@ -395,9 +472,8 @@ def select(ctx: Context) -> EditPlan:
             order_note = "A reel opens on its strongest shot; " + (order_note or "the rest stays chronological.")
     shots = []
     for i, ((_, beats, label), seg) in enumerate(zip(plan_slots, chosen, strict=True)):
-        clip = ctx.clips[seg.clip]
         need = beats * ctx.seconds_per_beat
-        offset = max(0.0, (seg.frames / fps_float(clip.fps) - need) / 2)
+        offset = max(0.0, (_seconds(ctx, seg, seg.frames) - need) / 2)
         role = (
             "opening"
             if i == 0
@@ -417,19 +493,14 @@ def select(ctx: Context) -> EditPlan:
                 speed=1.0,
                 transition=transition,
                 role=role,
-                reason=f"Score {seg.final_score:.1f} ({tags}); {beats} beats in the {label}.",
+                reason=f"Score {seg.final_score:.1f} ({tags}); {beats} beats ({need:.1f} s) in the {label}.",
             )
-        )
-    pacing = []
-    for index, section in enumerate(ctx.music.sections):
-        pacing.append(
-            {"section": index, "label": section.label, "beats_per_cut": pacing_for(ctx.style, section.label, ctx.reel)}
         )
     return EditPlan(
         title=f"{ctx.style.title()} {'reel' if ctx.reel else 'cut'}",
-        concept="Deterministic selection: best-scoring segments in "
-        "flight order, cut to the section pacing, with the strongest moments on the drop.",
-        pacing=pacing,
+        concept="Deterministic selection: best-scoring segments in flight order, held for the target shot length "
+        "of each section, with the strongest moments on the peak.",
+        pacing=_pacing_list(ctx),
         shots=shots,
         order_note=order_note,
         closing_note="Ends on the last chosen segment as the music fades.",
@@ -438,7 +509,9 @@ def select(ctx: Context) -> EditPlan:
 
 
 def fix(ctx: Context, plan: EditPlan) -> EditPlan:
-    """Deterministic fixer: keep what is valid in Claude's plan, then patch length and order."""
+    """Deterministic fixer: keep what is valid in Claude's plan, lift short shots to the floor, then patch length
+    and order."""
+    floor = ctx.floor_beats
     kept: list[PlannedShot] = []
     seen: set[str] = set()
     for planned in plan.shots:
@@ -454,11 +527,14 @@ def fix(ctx: Context, plan: EditPlan) -> EditPlan:
             for k in kept
         ):
             continue
+        if any(_same_run(ctx, seg, ctx.segments[k.segment_id]) for k in kept):
+            continue
         speed = planned.speed if 0 < planned.speed <= 4 and planned.speed >= max_slowmo(clip, ctx.out_fps) else 1.0
-        beats = planned.beats
-        while beats > 1 and seg.frames / fps_float(clip.fps) < beats * ctx.seconds_per_beat * speed:
+        lo, hi = ctx.bounds(seg)
+        beats = max(planned.beats, floor)
+        while beats > floor and _seconds(ctx, seg, hi - lo) < _need_seconds(ctx, beats) * speed:
             beats -= 1
-        if seg.frames / fps_float(clip.fps) < beats * ctx.seconds_per_beat * speed:
+        if _seconds(ctx, seg, hi - lo) < _need_seconds(ctx, beats) * speed:
             continue
         kept.append(
             planned.model_copy(
@@ -469,20 +545,22 @@ def fix(ctx: Context, plan: EditPlan) -> EditPlan:
     total = sum(p.beats for p in kept)
     while total > ctx.window.beats and kept:
         longest = max(range(len(kept)), key=lambda i: kept[i].beats)
-        if kept[longest].beats > 1:
+        if kept[longest].beats > floor:
             kept[longest] = kept[longest].model_copy(update={"beats": kept[longest].beats - 1})
         else:
             kept.pop(min(range(len(kept)), key=lambda i: ctx.segments[kept[i].segment_id].final_score))
         total = sum(p.beats for p in kept)
     spares = [s for s in sorted(ctx.segments.values(), key=lambda s: -ctx.rank(s)) if s.id not in seen]
     while total < ctx.window.beats and spares:
-        label = ctx.section_label(total)
-        beats = min(pacing_for(ctx.style, label, ctx.reel), ctx.window.beats - total)
+        beats = min(ctx.beats_per_cut(total), ctx.window.beats - total)
+        if ctx.window.beats - total - beats < floor:
+            beats = ctx.window.beats - total
         seg = next(
             (
                 s
                 for s in spares
-                if s.frames / fps_float(ctx.clips[s.clip].fps) >= _need_seconds(ctx, beats, ctx.clips[s.clip])
+                if _seconds(ctx, s, s.frames) >= _need_seconds(ctx, beats)
+                and not any(_same_run(ctx, s, ctx.segments[k.segment_id]) for k in kept)
             ),
             None,
         )
@@ -507,7 +585,8 @@ def fix(ctx: Context, plan: EditPlan) -> EditPlan:
         kept = [p.model_copy(update={"beats": b}) for p, b in zip(kept, positions, strict=True)]
         for i, p in enumerate(kept):
             seg = ctx.segments[p.segment_id]
-            if seg.frames / fps_float(ctx.clips[seg.clip].fps) < p.beats * ctx.seconds_per_beat * p.speed:
+            lo, hi = ctx.bounds(seg)
+            if _seconds(ctx, seg, hi - lo) < p.beats * ctx.seconds_per_beat * p.speed:
                 kept[i] = p.model_copy(update={"speed": 1.0})
     for i, p in enumerate(kept):
         if p.transition == "crossfade" and i > 0:
@@ -519,8 +598,8 @@ def fix(ctx: Context, plan: EditPlan) -> EditPlan:
 REEL_BRIEF = (
     "Format: a SHORT VERTICAL edit for TikTok and Instagram Reels. Every shot is centre-cropped from the "
     "landscape source to 9:16, so the left and right thirds of each frame are cut away. Open on one of the "
-    "strongest shots in the very first second: no slow build, no establishing shot. Keep the pacing fast "
-    "throughout (about 2 beats per cut, longer only for a shot that earns it), favour shots whose subject or "
+    "strongest shots in the very first second: no slow build, no establishing shot. Keep the pacing brisk "
+    "throughout (see the pacing targets below), favour shots whose subject or "
     "action sits in the centre of the frame (the centre column scores this: above 1.0 means the detail is "
     "concentrated in the middle), and avoid shots whose interest is at the sides. Crossfades are rarely right here."
 )
@@ -543,9 +622,10 @@ def director_prompt(ctx: Context, segments_table: str) -> str:
     ]
     for a, b, section in ctx.in_window():
         index = ctx.music.sections.index(section)
+        per_cut = ctx.beats_per_cut(a)
         lines.append(
             f"  section {index}: {section.label}, beats {a}-{b} ({a * spb:.1f}-{b * spb:.1f} s), "
-            f"energy {section.energy:.2f}"
+            f"energy {section.energy:.2f}, aim for about {per_cut} beats ({per_cut * spb:.1f} s) per shot"
         )
     peak = ctx.peak()
     if peak:
@@ -555,7 +635,17 @@ def director_prompt(ctx: Context, segments_table: str) -> str:
             f"Peak: edit beats {peak[0]}-{peak[1]}, {where}. Put the strongest shots there "
             "(section labels are an energy heuristic)."
         )
+    pace = ctx.pacing
     lines += [
+        "",
+        f"Pacing: shots average about {pace.target_s:.1f} s ({beats_for(pace.target_s, spb)} beats); most between "
+        f"{pace.min_s:.1f} and {pace.max_s:.1f} s. Hold longer in quiet sections and a little shorter in loud ones. "
+        "FPV moves need time to read: give the best moments (a gap thread, a reveal, a close pass) a hold long "
+        "enough to show the approach, the pass and the exit. No shot may be shorter than "
+        f"{pace.floor_s:.1f} s ({ctx.floor_beats} beats), except a burst of 2-4 quick cuts used as an accent "
+        f"(for example into or on the drop), at most {max(1, int(ctx.window.beats * spb // 30))} such burst(s). "
+        "A hold may run past its segment's usable_s into the clean footage around it (extend_s is the most "
+        "available), as long as two shots never use the same footage.",
         "",
         "Session summary:",
         ctx.summary or "(none)",
@@ -569,7 +659,7 @@ def director_prompt(ctx: Context, segments_table: str) -> str:
 
 
 def segments_for_director(ctx: Context) -> str:
-    header = "id | flight | clip@time | usable_s | score | max_slowmo | flags | tags | description"
+    header = "id | flight | clip@time | usable_s | extend_s | score | max_slowmo | flags | tags | description"
     lines = [header.replace("| flags", "| centre | flags") if ctx.reel else header]
     for seg in sorted(ctx.segments.values(), key=ctx.chrono_key):
         clip = ctx.clips[seg.clip]
@@ -587,9 +677,12 @@ def segments_for_director(ctx: Context) -> str:
         tags = ",".join(seg.claude.tags) if seg.claude else ""
         desc = seg.claude.description if seg.claude else "(local signals only)"
         centre = f"{ctx.centre.get(seg.id, 1.0):.2f} | " if ctx.reel else ""
+        lo, hi = ctx.bounds(seg)
+        extend = (hi - lo) / fps_float(clip.fps)
         lines.append(
             f"{seg.id} | {seg.flight} | {seg.clip}@{format_timecode(seg.start, clip.fps)} | "
-            f"{seg.frames / fps_float(clip.fps):.2f} | {seg.final_score:.1f} | {max_slowmo(clip, ctx.out_fps)} | "
+            f"{seg.frames / fps_float(clip.fps):.2f} | {extend:.2f} | "
+            f"{seg.final_score:.1f} | {max_slowmo(clip, ctx.out_fps)} | "
             f"{centre}{','.join(flags) or '-'} | {tags} | {desc}"
         )
     return "\n".join(lines)
