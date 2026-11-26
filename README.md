@@ -3,7 +3,8 @@
 Turns a folder of raw DJI O4 FPV clips plus a music track into a beat-synced highlight edit. Claude scores the
 footage and directs the edit; code checks the plan, snaps every cut to a beat frame, and renders.
 
-Phase 1 is the engine and the command line. The web app (`web/`) and server arrive in later phases.
+There is a local web app (`goodfeeling serve`) for importing, watching progress, reading the director's plan, and
+reviewing segments, and the same engine as command line steps.
 
 ## Setup (macOS, Apple Silicon)
 
@@ -17,6 +18,50 @@ uv run goodfeeling doctor
 ```
 
 On Linux, install ffmpeg from your package manager; renders use libx264 there.
+
+## The app
+
+The web app needs Node.js once, to build it (`brew install node`):
+
+```sh
+cd web && npm install && npm run build && cd ..
+uv run goodfeeling serve
+```
+
+`serve` starts the server on http://127.0.0.1:8765 (it never listens beyond this machine), starts the worker that runs
+jobs, and opens the browser. Ctrl-C stops both. `--port`, `--no-open` and `--data-root` do what they say.
+
+- **Projects** lists every session with its edits and its Claude spend. Opening one never re-scores it.
+- **Import** takes a footage folder and a music file (type a path or browse), length, style, resolution, format,
+  pace, and where in the song to start: click the track, or pick one of the suggested stretches. Proxies and
+  analysis run locally; the job then waits for you to approve the Claude estimate before any call.
+- **Overview** shows the render, the director's plan with its reason for every shot (click a shot to jump to it),
+  the session summary, the music sections with the stretch the edit uses, the contact sheet, and a switch between
+  the project's edits (the default edit and a reel).
+- **Review** is every candidate segment, including those left out, with a looping preview on hover, its score,
+  tags, description, and Claude's reason. Include or exclude a segment, star it as a must-have, like or dislike it,
+  then **Re-plan**: the director runs again with those choices (scores come from the cache) and the edit is
+  re-rendered. Excluded segments are never used, not even as footage a neighbouring shot runs into; starred ones
+  must be. Each like, dislike, star, and include/exclude is also recorded in the `feedback` table.
+- **Claude log** shows every prompt and response for the project, with tokens and cost.
+- **Settings** edits the settings file: API key (shown only by its last four characters), models and effort per
+  step, scoring weights, pace, the style note, and the spend limit per run.
+
+Jobs survive restarts. The worker leases each job and renews the lease while it runs; if the server stops, the job
+is handed back and resumes from the engine's checkpoints on the next start (finished proxies, cached scores, and
+rendered pieces are kept), and if a worker dies outright its lease runs out and the job is picked up again.
+
+### Developing the app
+
+```sh
+uv run goodfeeling serve --dev       # the API on :8765 plus the Vite dev server with hot reload on :5173
+cd web && npm run gen:api            # after changing the API: regenerate src/api/schema.d.ts from FastAPI's schema
+cd web && npm run build              # typecheck and build into web/dist, which serve uses when not in --dev
+```
+
+`--dev` runs `npm install` the first time if `web/node_modules` is missing. The web app is React, TypeScript, and
+Vite with TanStack Query and Tailwind CSS; its API types are generated, so a server change that breaks the UI fails
+the typecheck.
 
 ## Commands
 
@@ -97,7 +142,8 @@ the data root, `~/Movies/Good Feeling/` by default (override with `--data-root`,
 `data_root` in the settings file):
 
 ```
-app.db                         projects, clips, segments, score cache, Claude log, edits and their revisions
+app.db                         projects, clips, segments, score cache, Claude log, edits and their revisions,
+                               jobs and their progress, review choices, feedback events
 cache/shots/                   rendered pieces, keyed by content, reused across re-renders
 projects/<name>/
   proxies/                     8-bit 720p H.264 proxies (keyframe every 15 frames)
@@ -197,7 +243,9 @@ What the Mac run has to confirm, because the cloud build machine (Linux, no DJI 
 ```sh
 uv run ruff check src tests scripts && uv run ruff format --check src tests scripts
 uv run pytest -q
+cd web && npm ci && npm run build
 ```
 
 The tests are deliberately few: originals untouched after a full run, EDL validation and round trips (including
-`"MM:SS.mmm"`), and cuts landing on beat frames without drift, on tiny synthetic ffmpeg fixtures.
+`"MM:SS.mmm"`), cuts landing on beat frames without drift, a job resuming after its worker dies, review choices
+reaching the director, and the API key never going back to the browser, on tiny synthetic ffmpeg fixtures.
